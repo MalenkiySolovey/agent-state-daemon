@@ -86,6 +86,11 @@ public sealed class RealProcessIntegrationTests
             Assert.DoesNotContain(marker, rawResponse, StringComparison.Ordinal);
             await daemon.WaitForOutputAsync("result=invalid_params");
             Assert.DoesNotContain(marker, daemon.Output, StringComparison.Ordinal);
+
+            var unavailableShadowResponse = await SendRawAsync(pipeName,
+                "{\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"shadow.accounts.reconcile\",\"params\":{\"collection\":{\"schemaVersion\":1,\"accounts\":[]}}}");
+            using var unavailableShadow = JsonDocument.Parse(unavailableShadowResponse);
+            Assert.Equal(-32601, unavailableShadow.RootElement.GetProperty("error").GetProperty("code").GetInt32());
         }
 
         await daemon.KillAsync();
@@ -145,6 +150,70 @@ public sealed class RealProcessIntegrationTests
     }
 
     [Fact]
+    public async Task ShadowModeAdvertisesCapabilityAndReconcilesPersistedCanonicalSnapshots()
+    {
+        using var directory = new IntegrationTemporaryDirectory();
+        var pipeName = TestPipeName();
+        await using (var daemon = await DaemonProcess.StartAsync(directory.Path, pipeName, shadowMode: true))
+        await using (var client = await daemon.ConnectClientAsync())
+        {
+            using var info = JsonDocument.Parse(await SendRawAsync(pipeName,
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.info\",\"params\":{}}"));
+            var infoResult = info.RootElement.GetProperty("result");
+            var capability = infoResult.GetProperty("capabilities").EnumerateArray()
+                .Single(item => item.GetProperty("capabilityId").GetString() == "shadow.accounts.reconcile");
+            Assert.True(capability.GetProperty("supported").GetBoolean());
+            Assert.Equal(CanonicalProtocolPin.ManifestSha256,
+                capability.GetProperty("extensions").GetProperty("protocolManifestSha256").GetString());
+
+            using var inserted = JsonDocument.Parse(await SendShadowReconcileAsync(pipeName, 2, """
+                [
+                  {"schemaVersion":1,"accountId":"synthetic-a","displayName":"Synthetic A","health":"valid","isActive":true,"sortOrder":0,"createdAt":"2026-10-20T12:00:00Z","planType":"plus"},
+                  {"schemaVersion":1,"accountId":"synthetic-b","displayName":"Synthetic B","health":"unknown","isActive":false,"sortOrder":1,"createdAt":"2026-10-20T12:01:00Z","planType":null}
+                ]
+                """));
+            Assert.True(inserted.RootElement.TryGetProperty("result", out _), inserted.RootElement.GetRawText());
+            Assert.Equal(2, inserted.RootElement.GetProperty("result").GetProperty("inserted").GetInt32());
+
+            var initial = await client.ListAccountsAsync();
+            Assert.Collection(initial.Collection.Accounts,
+                first =>
+                {
+                    Assert.Equal("synthetic-a", first.AccountId);
+                    Assert.Equal("Synthetic A", first.DisplayName);
+                    Assert.True(first.IsActive);
+                },
+                second =>
+                {
+                    Assert.Equal("synthetic-b", second.AccountId);
+                    Assert.Equal(1, second.SortOrder);
+                });
+
+            using var changed = JsonDocument.Parse(await SendShadowReconcileAsync(pipeName, 3, """
+                [{"schemaVersion":1,"accountId":"synthetic-b","displayName":"Synthetic B2","health":"needs_relogin","isActive":true,"sortOrder":0,"createdAt":"2026-10-20T12:02:00Z","planType":"team"}]
+                """));
+            var changedResult = changed.RootElement.GetProperty("result");
+            Assert.Equal(1, changedResult.GetProperty("updated").GetInt32());
+            Assert.Equal(1, changedResult.GetProperty("deleted").GetInt32());
+
+            var final = await client.ListAccountsAsync();
+            var only = Assert.Single(final.Collection.Accounts);
+            Assert.Equal("synthetic-b", only.AccountId);
+            Assert.Equal("Synthetic B2", only.DisplayName);
+            Assert.Equal("needs_relogin", only.Health);
+            Assert.True(only.IsActive);
+            Assert.Equal(0, only.SortOrder);
+            Assert.Equal("team", only.PlanType);
+        }
+
+        await using var restarted = await DaemonProcess.StartAsync(directory.Path, TestPipeName(), shadowMode: true);
+        await using var restartedClient = await restarted.ConnectClientAsync();
+        var recovered = Assert.Single((await restartedClient.ListAccountsAsync()).Collection.Accounts);
+        Assert.Equal("synthetic-b", recovered.AccountId);
+        Assert.Equal("Synthetic B2", recovered.DisplayName);
+    }
+
+    [Fact]
     public async Task DataDirectoryAllowsOnlyOneDaemonOwner()
     {
         using var directory = new IntegrationTemporaryDirectory();
@@ -168,6 +237,8 @@ public sealed class RealProcessIntegrationTests
 
         Assert.Equal(4, second.ExitCode);
         Assert.False(daemon.HasExited);
+        await daemon.KillAsync();
+        Assert.True(daemon.HasExited);
     }
 
     private static async Task<bool> TryUpdateAsync(AgentStateDaemonClient client, string accountId, string revision, string nickname)
@@ -191,15 +262,47 @@ public sealed class RealProcessIntegrationTests
 
     private static async Task<string> SendRawAsync(string pipeName, string request)
     {
-        await using var pipe = new NamedPipeClientStream(
-            ".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-        await pipe.ConnectAsync(3_000);
-        var bytes = Encoding.UTF8.GetBytes(request + "\n");
-        await pipe.WriteAsync(bytes);
-        await pipe.FlushAsync();
-        using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
-        return await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(3))
-            ?? throw new EndOfStreamException("The daemon closed the pipe before returning a response.");
+        NamedPipeClientStream? pipe = null;
+        Exception? lastFailure = null;
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            var candidate = new NamedPipeClientStream(
+                ".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            try
+            {
+                await candidate.ConnectAsync(250);
+                pipe = candidate;
+                break;
+            }
+            catch (Exception exception) when (exception is IOException or TimeoutException)
+            {
+                lastFailure = exception;
+                await candidate.DisposeAsync();
+                await Task.Delay(50);
+            }
+        }
+
+        if (pipe is null)
+            throw new TimeoutException("The daemon Named Pipe was not available after retries.", lastFailure);
+
+        await using (pipe.ConfigureAwait(false))
+        {
+            var bytes = Encoding.UTF8.GetBytes(request + "\n");
+            await pipe.WriteAsync(bytes);
+            await pipe.FlushAsync();
+            using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+            return await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(3))
+                ?? throw new EndOfStreamException("The daemon closed the pipe before returning a response.");
+        }
+    }
+
+    private static Task<string> SendShadowReconcileAsync(string pipeName, int requestId, string accountsJson)
+    {
+        using var accounts = JsonDocument.Parse(accountsJson);
+        var compactAccounts = JsonSerializer.Serialize(accounts.RootElement);
+        var request = "{\"jsonrpc\":\"2.0\",\"id\":" + requestId.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+            ",\"method\":\"shadow.accounts.reconcile\",\"params\":{\"collection\":{\"schemaVersion\":1,\"accounts\":" + compactAccounts + "}}}";
+        return SendRawAsync(pipeName, request);
     }
 
     private static AccountRecord CreateSyntheticAccount() => new(
@@ -240,9 +343,17 @@ public sealed class RealProcessIntegrationTests
         public void Dispose()
         {
             SqliteConnection.ClearAllPools();
-            if (Directory.Exists(Path))
+            for (var attempt = 0; attempt < 50 && Directory.Exists(Path); attempt++)
             {
-                Directory.Delete(Path, recursive: true);
+                try
+                {
+                    Directory.Delete(Path, recursive: true);
+                    return;
+                }
+                catch (IOException) when (attempt < 49)
+                {
+                    Thread.Sleep(100);
+                }
             }
         }
     }

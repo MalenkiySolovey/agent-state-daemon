@@ -25,7 +25,7 @@ internal sealed class DaemonProcess : IAsyncDisposable
 
     public string Output => string.Join('\n', _output);
 
-    public static async Task<DaemonProcess> StartAsync(string dataDirectory, string pipeName)
+    public static async Task<DaemonProcess> StartAsync(string dataDirectory, string pipeName, bool shadowMode = false)
     {
         var hostPath = Path.Combine(AppContext.BaseDirectory, "daemon-host", "AgentStateDaemon.Host.exe");
         if (!File.Exists(hostPath))
@@ -44,6 +44,8 @@ internal sealed class DaemonProcess : IAsyncDisposable
         startInfo.ArgumentList.Add(dataDirectory);
         startInfo.ArgumentList.Add("--pipe-name");
         startInfo.ArgumentList.Add(pipeName);
+        if (shadowMode)
+            startInfo.ArgumentList.Add("--shadow-mode");
 
         var process = Process.Start(startInfo) ?? throw new InvalidOperationException("The daemon process could not be started.");
         var daemon = new DaemonProcess(process, pipeName);
@@ -76,17 +78,24 @@ internal sealed class DaemonProcess : IAsyncDisposable
 
     public async Task<AgentStateDaemonClient> ConnectClientAsync()
     {
-        var client = new AgentStateDaemonClient(PipeName);
-        try
+        Exception? lastFailure = null;
+        for (var attempt = 0; attempt < 40 && !_process.HasExited; attempt++)
         {
-            await client.ConnectAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-            return client;
+            var client = new AgentStateDaemonClient(PipeName);
+            try
+            {
+                await client.ConnectAsync(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+                return client;
+            }
+            catch (Exception exception) when (exception is IOException or TimeoutException or OperationCanceledException)
+            {
+                lastFailure = exception;
+                await client.DisposeAsync().ConfigureAwait(false);
+                await Task.Delay(50).ConfigureAwait(false);
+            }
         }
-        catch
-        {
-            await client.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
+
+        throw new TimeoutException("The daemon Named Pipe could not be reconnected after retries.", lastFailure);
     }
 
     public async Task WaitForOutputAsync(string expectedText)

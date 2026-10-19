@@ -4,7 +4,7 @@ using Microsoft.Data.Sqlite;
 
 namespace AgentStateDaemon.Storage.Sqlite;
 
-internal sealed class SqliteStateStore : IAccountRepository
+internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepository
 {
     public const int CurrentSchemaVersion = 1;
     public const int BusyTimeoutMilliseconds = 5_000;
@@ -172,6 +172,66 @@ internal sealed class SqliteStateStore : IAccountRepository
             var updated = TryGet(connection, transaction, accountId) ?? throw new DaemonStorageException("storage_failure");
             transaction.Commit();
             return updated;
+        }
+        catch (SqliteException exception)
+        {
+            throw MapStorageError(exception);
+        }
+    }
+
+    public ShadowAccountReconcileResult ReconcileShadowAccounts(IReadOnlyList<AgentStateDaemon.Core.Protocol.AccountDescriptor> accounts)
+    {
+        EnsureInitialized();
+        try
+        {
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction();
+            var currentAccounts = ReadAccounts(connection, transaction);
+            var currentById = currentAccounts.ToDictionary(account => account.AccountId, StringComparer.Ordinal);
+            var targetIds = new HashSet<string>(accounts.Select(account => account.AccountId), StringComparer.Ordinal);
+            var inserted = 0;
+            var updated = 0;
+            var unchanged = 0;
+
+            foreach (var target in accounts)
+            {
+                if (!ShadowAccountService.TryParseUtcTimestamp(target.CreatedAt, out var createdAt))
+                    throw new AccountValidationException();
+
+                if (currentById.TryGetValue(target.AccountId, out var current))
+                {
+                    if (IsProjectionEqual(current, target, createdAt))
+                    {
+                        unchanged++;
+                        continue;
+                    }
+
+                    UpdateShadowAccount(connection, transaction, target, createdAt);
+                    updated++;
+                }
+                else
+                {
+                    InsertShadowAccount(connection, transaction, target, createdAt);
+                    inserted++;
+                }
+            }
+
+            var deleted = 0;
+            foreach (var current in currentAccounts)
+            {
+                if (targetIds.Contains(current.AccountId))
+                    continue;
+
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = "DELETE FROM accounts WHERE account_id = $account_id;";
+                command.Parameters.AddWithValue("$account_id", current.AccountId);
+                deleted += command.ExecuteNonQuery();
+            }
+
+            _beforeAccountCommit?.Invoke();
+            transaction.Commit();
+            return new ShadowAccountReconcileResult(inserted, updated, deleted, unchanged);
         }
         catch (SqliteException exception)
         {
@@ -372,6 +432,104 @@ internal sealed class SqliteStateStore : IAccountRepository
         using var command = CreateGetCommand(connection, transaction, accountId);
         using var reader = command.ExecuteReader();
         return reader.Read() ? ReadAccount(reader) : null;
+    }
+
+    private static List<AccountRecord> ReadAccounts(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT account_id, display_name, nickname, health, is_active, sort_order,
+                   created_at_utc, plan_type, revision
+            FROM accounts
+            ORDER BY sort_order, account_id COLLATE BINARY
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$limit", AccountService.MaximumAccountCount + 1);
+
+        using var reader = command.ExecuteReader();
+        var records = new List<AccountRecord>();
+        while (reader.Read())
+        {
+            if (records.Count == AccountService.MaximumAccountCount)
+                throw new DaemonStorageException("resource_limit_exceeded");
+            records.Add(ReadAccount(reader));
+        }
+
+        return records;
+    }
+
+    private static bool IsProjectionEqual(
+        AccountRecord current,
+        AgentStateDaemon.Core.Protocol.AccountDescriptor target,
+        DateTimeOffset targetCreatedAt) =>
+        current.Nickname is null &&
+        string.Equals(current.DisplayName, target.DisplayName, StringComparison.Ordinal) &&
+        string.Equals(current.Health, target.Health, StringComparison.Ordinal) &&
+        current.IsActive == target.IsActive &&
+        current.SortOrder == target.SortOrder &&
+        current.CreatedAtUtc == targetCreatedAt &&
+        string.Equals(current.PlanType, target.PlanType, StringComparison.Ordinal);
+
+    private void InsertShadowAccount(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        AgentStateDaemon.Core.Protocol.AccountDescriptor account,
+        DateTimeOffset createdAt)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO accounts (
+                account_id, display_name, nickname, health, is_active, sort_order,
+                created_at_utc, plan_type, revision, updated_at_utc)
+            VALUES (
+                $account_id, $display_name, NULL, $health, $is_active, $sort_order,
+                $created_at_utc, $plan_type, $revision, $updated_at);
+            """;
+        AddShadowAccountParameters(command, account, createdAt);
+        command.ExecuteNonQuery();
+    }
+
+    private void UpdateShadowAccount(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        AgentStateDaemon.Core.Protocol.AccountDescriptor account,
+        DateTimeOffset createdAt)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE accounts
+            SET display_name = $display_name,
+                nickname = NULL,
+                health = $health,
+                is_active = $is_active,
+                sort_order = $sort_order,
+                created_at_utc = $created_at_utc,
+                plan_type = $plan_type,
+                revision = $revision,
+                updated_at_utc = $updated_at
+            WHERE account_id = $account_id;
+            """;
+        AddShadowAccountParameters(command, account, createdAt);
+        command.ExecuteNonQuery();
+    }
+
+    private void AddShadowAccountParameters(
+        SqliteCommand command,
+        AgentStateDaemon.Core.Protocol.AccountDescriptor account,
+        DateTimeOffset createdAt)
+    {
+        command.Parameters.AddWithValue("$account_id", account.AccountId);
+        command.Parameters.AddWithValue("$display_name", account.DisplayName);
+        command.Parameters.AddWithValue("$health", account.Health);
+        command.Parameters.AddWithValue("$is_active", account.IsActive ? 1 : 0);
+        command.Parameters.AddWithValue("$sort_order", account.SortOrder);
+        command.Parameters.AddWithValue("$created_at_utc", createdAt.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$plan_type", (object?)account.PlanType ?? DBNull.Value);
+        command.Parameters.AddWithValue("$revision", Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$updated_at", FormatTimestamp(_timeProvider.GetUtcNow()));
     }
 
     private static SqliteCommand CreateGetCommand(SqliteConnection connection, SqliteTransaction? transaction, string accountId)

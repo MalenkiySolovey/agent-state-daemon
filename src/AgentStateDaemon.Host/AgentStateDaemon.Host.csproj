@@ -14,4 +14,7 @@
     <Content Include="..\..\third_party\agent-state-protocol\PROVENANCE.json" Link="PROVENANCE.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\third_party\agent-state-protocol\schemas\**\*" Link="schemas\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AgentStateDaemon.Tests" />
+  </ItemGroup>
 </Project>

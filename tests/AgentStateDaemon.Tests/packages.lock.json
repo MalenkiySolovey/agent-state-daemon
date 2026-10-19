@@ -165,6 +165,15 @@
       "agentstatedaemon.core": {
         "type": "Project"
       },
+      "agentstatedaemon.host": {
+        "type": "Project",
+        "dependencies": {
+          "AgentStateDaemon.Core": "[0.1.0-experimental, )",
+          "AgentStateDaemon.Rpc": "[0.1.0-experimental, )",
+          "AgentStateDaemon.Storage.Sqlite": "[0.1.0-experimental, )",
+          "AgentStateDaemon.Transport.NamedPipes": "[0.1.0-experimental, )"
+        }
+      },
       "agentstatedaemon.rpc": {
         "type": "Project",
         "dependencies": {
@@ -176,6 +185,12 @@
         "dependencies": {
           "AgentStateDaemon.Core": "[0.1.0-experimental, )",
           "Microsoft.Data.Sqlite": "[10.0.12, )"
+        }
+      },
+      "agentstatedaemon.transport.namedpipes": {
+        "type": "Project",
+        "dependencies": {
+          "AgentStateDaemon.Rpc": "[0.1.0-experimental, )"
         }
       },
       "Microsoft.Data.Sqlite": {

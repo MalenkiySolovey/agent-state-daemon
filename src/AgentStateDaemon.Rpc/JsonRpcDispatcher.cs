@@ -21,19 +21,25 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
     private readonly TimeProvider _timeProvider;
     private readonly string _daemonVersion;
     private readonly Action<string, string, long>? _safeLog;
+    private readonly ShadowAccountService? _shadowAccounts;
+    private readonly bool _shadowMode;
 
     public JsonRpcDispatcher(
         AccountService accounts,
         string daemonVersion,
         DateTimeOffset startedAt,
         TimeProvider? timeProvider = null,
-        Action<string, string, long>? safeLog = null)
+        Action<string, string, long>? safeLog = null,
+        ShadowAccountService? shadowAccounts = null,
+        bool shadowMode = false)
     {
         _accounts = accounts;
         _daemonVersion = daemonVersion;
         _startedAt = startedAt.ToUniversalTime();
         _timeProvider = timeProvider ?? TimeProvider.System;
         _safeLog = safeLog;
+        _shadowAccounts = shadowAccounts;
+        _shadowMode = shadowMode && shadowAccounts is not null;
     }
 
     public byte[]? Dispatch(ReadOnlyMemory<byte> request)
@@ -161,6 +167,7 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
         "accounts.list" => InvokeList(parameters),
         "accounts.get" => InvokeGet(parameters),
         "accounts.updateMetadata" => InvokeUpdate(parameters),
+        "shadow.accounts.reconcile" => InvokeShadowReconcile(parameters),
         _ => throw new RpcMethodNotFoundException()
     };
 
@@ -180,7 +187,17 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
             CanonicalProtocolPin.ManifestSha256,
             SqliteSchemaVersion: 1,
             StartedAt: FormatTimestamp(_startedAt),
-            UptimeSeconds: Math.Max(0, (long)(now - _startedAt).TotalSeconds));
+            UptimeSeconds: Math.Max(0, (long)(now - _startedAt).TotalSeconds),
+            Capabilities:
+            [
+                new CapabilityResult(
+                    1,
+                    "shadow.accounts.reconcile",
+                    _shadowMode,
+                    new CapabilityExtensions(
+                        CanonicalProtocolPin.SchemaVersion,
+                        CanonicalProtocolPin.ManifestSha256))
+            ]);
     }
 
     private AccountListResult InvokeList(JsonElement parameters)
@@ -222,6 +239,47 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
         });
     }
 
+    private ShadowReconcileRpcResult InvokeShadowReconcile(JsonElement parameters)
+    {
+        if (!_shadowMode || _shadowAccounts is null)
+            throw new RpcMethodNotFoundException();
+
+        var values = ReadObject(parameters, ["collection"]);
+        if (!values.TryGetValue("collection", out var collectionElement))
+            throw new RpcInvalidParamsException();
+
+        var collectionValues = ReadObject(collectionElement, ["schemaVersion", "accounts"]);
+        var schemaVersion = ReadRequiredInt32(collectionValues, "schemaVersion");
+        if (!collectionValues.TryGetValue("accounts", out var accountsElement) || accountsElement.ValueKind != JsonValueKind.Array)
+            throw new RpcInvalidParamsException();
+
+        var accounts = new List<AccountDescriptor>();
+        foreach (var accountElement in accountsElement.EnumerateArray())
+        {
+            var accountValues = ReadObject(accountElement,
+                ["schemaVersion", "accountId", "displayName", "health", "isActive", "sortOrder", "createdAt", "planType"]);
+            var planType = ReadNullableString(accountValues, "planType", 128);
+            accounts.Add(new AccountDescriptor
+            {
+                SchemaVersion = ReadRequiredInt32(accountValues, "schemaVersion"),
+                AccountId = ReadRequiredString(accountValues, "accountId", 0, 256),
+                DisplayName = ReadRequiredString(accountValues, "displayName", 0, 256),
+                Health = ReadRequiredString(accountValues, "health", 0, 32),
+                IsActive = ReadRequiredBoolean(accountValues, "isActive"),
+                SortOrder = ReadRequiredInt32(accountValues, "sortOrder"),
+                CreatedAt = ReadRequiredString(accountValues, "createdAt", 0, 64),
+                PlanType = planType
+            });
+        }
+
+        var result = _shadowAccounts.Reconcile(new AccountCollectionDocument
+        {
+            SchemaVersion = schemaVersion,
+            Accounts = accounts
+        });
+        return new ShadowReconcileRpcResult(1, result.Inserted, result.Updated, result.Deleted, result.Unchanged);
+    }
+
     private static Dictionary<string, JsonElement> ReadObject(JsonElement parameters, string[] allowedNames)
     {
         if (parameters.ValueKind != JsonValueKind.Object)
@@ -258,6 +316,35 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
         return text;
     }
 
+    private static int ReadRequiredInt32(Dictionary<string, JsonElement> values, string name)
+    {
+        if (!values.TryGetValue(name, out var value) || value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out var result))
+            throw new RpcInvalidParamsException();
+        return result;
+    }
+
+    private static bool ReadRequiredBoolean(Dictionary<string, JsonElement> values, string name)
+    {
+        if (!values.TryGetValue(name, out var value) || value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            throw new RpcInvalidParamsException();
+        return value.GetBoolean();
+    }
+
+    private static string? ReadNullableString(Dictionary<string, JsonElement> values, string name, int maximumLength)
+    {
+        if (!values.TryGetValue(name, out var value))
+            throw new RpcInvalidParamsException();
+        if (value.ValueKind == JsonValueKind.Null)
+            return null;
+        if (value.ValueKind != JsonValueKind.String)
+            throw new RpcInvalidParamsException();
+
+        var result = value.GetString();
+        if (result is null || result.Length > maximumLength)
+            throw new RpcInvalidParamsException();
+        return result;
+    }
+
     private static void ValidateEmptyParameters(JsonElement parameters)
     {
         if (parameters.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
@@ -278,8 +365,9 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
         return response;
     }
 
-    private static bool IsKnownMethod(string method) => method is
-        "system.ping" or "system.info" or "accounts.list" or "accounts.get" or "accounts.updateMetadata";
+    private bool IsKnownMethod(string method) => method is
+        "system.ping" or "system.info" or "accounts.list" or "accounts.get" or "accounts.updateMetadata" ||
+        (_shadowMode && method == "shadow.accounts.reconcile");
 
     private static byte[] SerializeSuccess(JsonElement id, object result)
     {
@@ -317,7 +405,25 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
         [property: JsonPropertyName("protocolManifestSha256")] string ProtocolManifestSha256,
         [property: JsonPropertyName("databaseSchemaVersion")] int SqliteSchemaVersion,
         [property: JsonPropertyName("startedAt")] string StartedAt,
-        [property: JsonPropertyName("uptimeSeconds")] long UptimeSeconds);
+        [property: JsonPropertyName("uptimeSeconds")] long UptimeSeconds,
+        [property: JsonPropertyName("capabilities")] IReadOnlyList<CapabilityResult> Capabilities);
+
+    private sealed record CapabilityResult(
+        [property: JsonPropertyName("schemaVersion")] int SchemaVersion,
+        [property: JsonPropertyName("capabilityId")] string CapabilityId,
+        [property: JsonPropertyName("supported")] bool Supported,
+        [property: JsonPropertyName("extensions")] CapabilityExtensions Extensions);
+
+    private sealed record CapabilityExtensions(
+        [property: JsonPropertyName("protocolSchemaVersion")] int ProtocolSchemaVersion,
+        [property: JsonPropertyName("protocolManifestSha256")] string ProtocolManifestSha256);
+
+    private sealed record ShadowReconcileRpcResult(
+        [property: JsonPropertyName("schemaVersion")] int SchemaVersion,
+        [property: JsonPropertyName("inserted")] int Inserted,
+        [property: JsonPropertyName("updated")] int Updated,
+        [property: JsonPropertyName("deleted")] int Deleted,
+        [property: JsonPropertyName("unchanged")] int Unchanged);
 
     private sealed record RpcSuccess(
         [property: JsonPropertyName("jsonrpc")] string JsonRpc,
