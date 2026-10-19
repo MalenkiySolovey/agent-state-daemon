@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "accounts": [
+    {
+      "schemaVersion": 1,
+      "accountId": "account_demo_01",
+      "displayName": "Example account",
+      "health": "valid",
+      "isActive": true,
+      "sortOrder": 0,
+      "createdAt": "2026-10-01T12:00:00Z",
+      "planType": "plus"
+    }
+  ]
+}

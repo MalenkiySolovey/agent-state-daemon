@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>AgentStateDaemon.Client</AssemblyName>
+    <RootNamespace>AgentStateDaemon.Client</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AgentStateDaemon.Core\AgentStateDaemon.Core.csproj" />
+  </ItemGroup>
+</Project>

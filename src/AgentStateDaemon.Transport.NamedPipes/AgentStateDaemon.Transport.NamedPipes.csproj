@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>AgentStateDaemon.Transport.NamedPipes</AssemblyName>
+    <RootNamespace>AgentStateDaemon.Transport.NamedPipes</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AgentStateDaemon.Rpc\AgentStateDaemon.Rpc.csproj" />
+  </ItemGroup>
+</Project>

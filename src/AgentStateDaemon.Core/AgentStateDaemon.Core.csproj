@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>AgentStateDaemon.Core</AssemblyName>
+    <RootNamespace>AgentStateDaemon.Core</RootNamespace>
+  </PropertyGroup>
+</Project>

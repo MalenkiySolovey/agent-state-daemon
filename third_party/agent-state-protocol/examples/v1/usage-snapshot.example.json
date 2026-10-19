@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "subjectId": "account_demo_01",
+  "subjectKind": "account",
+  "observedAt": "2026-10-01T12:00:00Z",
+  "source": "local-cache",
+  "freshness": "stale",
+  "state": "available",
+  "measurements": [
+    {
+      "name": "primary",
+      "used": 28,
+      "limit": 100,
+      "remaining": 72,
+      "unit": "percent",
+      "resetAt": "2026-10-01T17:00:00Z"
+    },
+    {
+      "name": "weekly",
+      "used": null,
+      "limit": null,
+      "remaining": null,
+      "unit": "percent",
+      "resetAt": null
+    }
+  ]
+}

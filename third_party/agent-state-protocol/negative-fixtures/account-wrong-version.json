@@ -1,0 +1,13 @@
+{
+  "schemaId": "urn:agent-state-protocol:v1:accounts:account-descriptor",
+  "instance": {
+    "schemaVersion": 2,
+    "accountId": "account_demo_01",
+    "displayName": "Example account 1",
+    "health": "unknown",
+    "isActive": false,
+    "sortOrder": 0,
+    "createdAt": "2026-01-01T00:00:00Z",
+    "planType": null
+  }
+}

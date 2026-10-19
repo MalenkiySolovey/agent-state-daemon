@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>AgentStateDaemon.Rpc</AssemblyName>
+    <RootNamespace>AgentStateDaemon.Rpc</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AgentStateDaemon.Core\AgentStateDaemon.Core.csproj" />
+  </ItemGroup>
+</Project>

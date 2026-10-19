@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>AgentStateDaemon.Host</AssemblyName>
+    <RootNamespace>AgentStateDaemon.Host</RootNamespace>
+    <UseAppHost>true</UseAppHost>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AgentStateDaemon.Core\AgentStateDaemon.Core.csproj" />
+    <ProjectReference Include="..\AgentStateDaemon.Storage.Sqlite\AgentStateDaemon.Storage.Sqlite.csproj" />
+    <ProjectReference Include="..\AgentStateDaemon.Rpc\AgentStateDaemon.Rpc.csproj" />
+    <ProjectReference Include="..\AgentStateDaemon.Transport.NamedPipes\AgentStateDaemon.Transport.NamedPipes.csproj" />
+    <Content Include="..\..\third_party\agent-state-protocol\protocol-manifest.json" Link="protocol-manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\third_party\agent-state-protocol\PROVENANCE.json" Link="PROVENANCE.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\third_party\agent-state-protocol\schemas\**\*" Link="schemas\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

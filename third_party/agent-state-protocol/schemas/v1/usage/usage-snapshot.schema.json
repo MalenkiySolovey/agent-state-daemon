@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-state-protocol:v1:usage:usage-snapshot",
+  "title": "UsageSnapshot",
+  "description": "A provenance- and freshness-aware observation; unknown values are null, never zero by convention.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "subjectId", "subjectKind", "observedAt", "source", "freshness", "state", "measurements"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "subjectId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "subjectKind": { "type": "string", "enum": ["account", "provider"] },
+    "observedAt": { "type": ["string", "null"], "format": "date-time", "pattern": "Z$" },
+    "source": { "type": "string", "enum": ["live", "local-cache", "unknown"] },
+    "freshness": { "type": "string", "enum": ["fresh", "stale", "unknown"] },
+    "state": { "type": "string", "enum": ["available", "unknown", "error"] },
+    "measurements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "used", "limit", "remaining", "unit", "resetAt"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "used": { "type": ["number", "null"], "minimum": 0 },
+          "limit": { "type": ["number", "null"], "minimum": 0 },
+          "remaining": { "type": ["number", "null"], "minimum": 0 },
+          "unit": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "resetAt": { "type": ["string", "null"], "format": "date-time", "pattern": "Z$" }
+        }
+      }
+    }
+  }
+}

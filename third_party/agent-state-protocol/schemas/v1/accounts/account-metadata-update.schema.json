@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-state-protocol:v1:accounts:account-metadata-update",
+  "title": "AccountMetadataUpdate",
+  "description": "Current v1 write concept is a user-selected nickname; expectedRevision is an opaque optional CAS token for owners that support it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "accountId", "nickname"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "accountId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "nickname": { "type": "string", "maxLength": 256 },
+    "expectedRevision": { "type": ["string", "null"], "minLength": 1, "maxLength": 256 }
+  }
+}

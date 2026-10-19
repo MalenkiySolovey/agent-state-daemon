@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "providerId": "provider_demo_01",
+  "displayName": "Example provider",
+  "baseEndpoint": "https://api.example.invalid/v1",
+  "capabilities": [
+    {
+      "schemaVersion": 1,
+      "capabilityId": "tool-calling",
+      "supported": true
+    }
+  ],
+  "credential": {
+    "schemaVersion": 1,
+    "secretId": "secret_demo_api_01",
+    "kind": "api-key"
+  }
+}

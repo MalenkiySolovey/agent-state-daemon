@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "errorCode": "credential.unavailable",
+  "message": "A saved credential could not be read.",
+  "details": {
+    "operation": "usage.refresh",
+    "category": "storage"
+  },
+  "retryable": true
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-state-protocol:v1:common:capability-descriptor",
+  "title": "CapabilityDescriptor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "capabilityId", "supported"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "capabilityId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "supported": { "type": "boolean" },
+    "extensions": {
+      "type": "object",
+      "description": "Controlled forward-compatible extension point; values must remain primitive JSON scalars.",
+      "propertyNames": { "type": "string", "minLength": 1, "maxLength": 128 },
+      "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-state-protocol:v1:providers:provider-descriptor",
+  "title": "ProviderDescriptor",
+  "description": "Generic language-model provider metadata; not a Codex routing target or model-catalog file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "providerId", "displayName", "baseEndpoint", "capabilities", "credential"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "providerId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "baseEndpoint": { "type": ["string", "null"], "format": "uri", "description": "Must not contain credentials, API keys, or secret-bearing query parameters." },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schemaVersion", "capabilityId", "supported"],
+        "properties": {
+          "schemaVersion": { "const": 1 },
+          "capabilityId": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "supported": { "type": "boolean" },
+          "extensions": {
+            "type": "object",
+            "propertyNames": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+          }
+        }
+      }
+    },
+    "credential": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["schemaVersion", "secretId", "kind"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "secretId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "kind": { "type": "string", "enum": ["codex-auth", "codex-oauth", "api-key", "totp"] }
+      }
+    }
+  }
+}

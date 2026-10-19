@@ -1,0 +1,25 @@
+# Agent State Daemon
+
+> **Experimental / pre-stable.** This project is under active protocol and storage development. Persistence, RPC methods, and client interfaces may change before a first stable release. It is not production-ready and does not promise API, IPC, migration, or v1.0 compatibility.
+
+Agent State Daemon is reusable, local-first infrastructure for transactional state described by the [Agent State Protocol](https://github.com/MalenkiySolovey/agent-state-protocol). It is not part of Codex Control Center and does not depend on Codex.
+
+## Stage 3A scope
+
+The current implementation persists account metadata only. Its local interface uses JSON-RPC 2.0 over bounded UTF-8 NDJSON on a Windows current-user Named Pipe. SQLite is an internal implementation detail; clients use the daemon protocol and never open its database. Account metadata updates use opaque revisions for optimistic concurrency.
+
+Implemented methods:
+
+- `system.ping`
+- `system.info`
+- `accounts.list`
+- `accounts.get`
+- `accounts.updateMetadata`
+
+The host runs in the foreground. Use `--data-dir <path>` to select a development or test data directory and `--pipe-name <name>` to select a pipe name. Without `--data-dir`, the host uses an application-owned local user-data directory. Keep production data on a local filesystem; network filesystems are unsupported.
+
+## Not implemented
+
+Secret or credential storage, providers, model inventories, usage, settings, launch profiles, Codex routing/processes, threads, sessions, leases, chat/project sharing, Control Center migration, Unix sockets, HTTP, cloud sync, service installation, and automatic startup are outside the current scope.
+
+No release, installer, service package, or NuGet package is published by this repository at this experimental stage.

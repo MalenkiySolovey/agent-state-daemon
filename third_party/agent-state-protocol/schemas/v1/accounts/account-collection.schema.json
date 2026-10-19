@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-state-protocol:v1:accounts:account-collection",
+  "title": "AccountCollection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "accounts"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "accounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schemaVersion", "accountId", "displayName", "health", "isActive", "sortOrder", "createdAt", "planType"],
+        "properties": {
+          "schemaVersion": { "const": 1 },
+          "accountId": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "displayName": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "health": { "type": "string", "enum": ["unknown", "valid", "needs_relogin"] },
+          "isActive": { "type": "boolean" },
+          "sortOrder": { "type": "integer", "minimum": 0 },
+          "createdAt": { "type": "string", "format": "date-time", "pattern": "Z$" },
+          "planType": { "type": ["string", "null"], "maxLength": 128 }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>AgentStateDaemon.Storage.Sqlite</AssemblyName>
+    <RootNamespace>AgentStateDaemon.Storage.Sqlite</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AgentStateDaemon.Core\AgentStateDaemon.Core.csproj" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+  </ItemGroup>
+</Project>

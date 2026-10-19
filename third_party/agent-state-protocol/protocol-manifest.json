@@ -1,0 +1,79 @@
+{
+  "protocol": "agent-state-protocol",
+  "schemaVersion": 1,
+  "dialect": "https://json-schema.org/draft/2020-12/schema",
+  "schemas": [
+    {
+      "id": "urn:agent-state-protocol:v1:accounts:account-collection",
+      "path": "schemas/v1/accounts/account-collection.schema.json",
+      "sha256": "c055c3ee976d98fdd3909312ede88e58d3f908b133b7c460a6a47f6aee716f17",
+      "examples": [
+        "examples/v1/account-collection.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:accounts:account-descriptor",
+      "path": "schemas/v1/accounts/account-descriptor.schema.json",
+      "sha256": "1fce063fb5f5c16c9b2987c28894989b6efa09dd9811904280c81d7ec6e5af66",
+      "examples": [
+        "examples/v1/account-descriptor.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:accounts:account-metadata-update",
+      "path": "schemas/v1/accounts/account-metadata-update.schema.json",
+      "sha256": "a4cd0a37e2fb197ae51168600911e108b658d641b2b9238ef9ba72487300b570",
+      "examples": [
+        "examples/v1/account-metadata-update.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:common:capability-descriptor",
+      "path": "schemas/v1/common/capability-descriptor.schema.json",
+      "sha256": "710d0e87a25d2376c8558fe077e05d414177b494ed89ee5211ef791956caa06a",
+      "examples": [
+        "examples/v1/capability-descriptor.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:common:error-detail",
+      "path": "schemas/v1/common/error-detail.schema.json",
+      "sha256": "0a2e2273af78ddaace2dbb343b592e8c57dfd8af6cde1003372cb8d0d93f248f",
+      "examples": [
+        "examples/v1/error-detail.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:common:secret-reference",
+      "path": "schemas/v1/common/secret-reference.schema.json",
+      "sha256": "a23e4148f3b554a18feef73c36159e22ca613ead9e3dbe6acc6b64d8c78d1c24",
+      "examples": [
+        "examples/v1/secret-reference.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:credentials:credential-descriptor",
+      "path": "schemas/v1/credentials/credential-descriptor.schema.json",
+      "sha256": "6247eccc10c408ae550086b165e26d4297595421c86c4e594bf7c65512c98e00",
+      "examples": [
+        "examples/v1/credential-descriptor.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:providers:provider-descriptor",
+      "path": "schemas/v1/providers/provider-descriptor.schema.json",
+      "sha256": "67ef2b47bb7226cae0e4640261603551ec96a66ab54b714b8b4e8cecdabcfad2",
+      "examples": [
+        "examples/v1/provider-descriptor.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:usage:usage-snapshot",
+      "path": "schemas/v1/usage/usage-snapshot.schema.json",
+      "sha256": "7b7a3536f4fb8259176e789af7c87167a38beaddf22c0c2fb4f7b816df44a8a3",
+      "examples": [
+        "examples/v1/usage-snapshot.example.json"
+      ]
+    }
+  ]
+}
