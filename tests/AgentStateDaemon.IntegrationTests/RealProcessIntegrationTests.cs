@@ -150,6 +150,21 @@ public sealed class RealProcessIntegrationTests
     }
 
     [Fact]
+    public async Task DaemonRemainsAvailableAfterClientDisconnectsImmediately()
+    {
+        using var directory = new IntegrationTemporaryDirectory();
+        await using var daemon = await DaemonProcess.StartAsync(directory.Path, TestPipeName());
+
+        await using (var abandonedClient = new AgentStateDaemonClient(daemon.PipeName))
+        {
+            await abandonedClient.ConnectAsync(TimeSpan.FromSeconds(3));
+        }
+
+        await using var client = await daemon.ConnectClientAsync();
+        Assert.True(await client.PingAsync());
+    }
+
+    [Fact]
     public async Task ShadowModeAdvertisesCapabilityAndReconcilesPersistedCanonicalSnapshots()
     {
         using var directory = new IntegrationTemporaryDirectory();

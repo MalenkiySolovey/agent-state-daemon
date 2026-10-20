@@ -28,6 +28,7 @@ internal sealed class NamedPipeRpcServer
         var activeRequests = new ConcurrentDictionary<long, Task<byte[]?>>();
         long nextClientId = 0;
         long nextRequestId = 0;
+        var consecutiveAcceptIoErrors = 0;
 
         try
         {
@@ -47,12 +48,27 @@ internal sealed class NamedPipeRpcServer
                 {
                     await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
                 }
+                catch (IOException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    await pipe.DisposeAsync().ConfigureAwait(false);
+                    clientSlots.Release();
+                    _safeLog?.Invoke("transport", "accept_io_error", 0);
+                    if (++consecutiveAcceptIoErrors >= 3)
+                    {
+                        throw;
+                    }
+
+                    await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
                 catch
                 {
                     await pipe.DisposeAsync().ConfigureAwait(false);
                     clientSlots.Release();
                     throw;
                 }
+
+                consecutiveAcceptIoErrors = 0;
 
                 var clientId = Interlocked.Increment(ref nextClientId);
                 activePipes.TryAdd(clientId, pipe);

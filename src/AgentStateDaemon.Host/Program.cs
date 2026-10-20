@@ -61,7 +61,16 @@ internal static class Program
             try
             {
                 Console.WriteLine($"event=daemon_started version={version} protocol_schema_version=1 shadow_mode={options.ShadowMode.ToString().ToLowerInvariant()}");
-                await server.RunAsync(shutdown.Token).ConfigureAwait(false);
+                try
+                {
+                    await server.RunAsync(shutdown.Token).ConfigureAwait(false);
+                }
+                catch (IOException)
+                {
+                    Console.Error.WriteLine("error=named_pipe_unavailable");
+                    return 4;
+                }
+
                 Console.WriteLine("event=daemon_stopped");
             }
             finally
