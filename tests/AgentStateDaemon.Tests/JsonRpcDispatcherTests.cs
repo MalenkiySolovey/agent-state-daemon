@@ -58,7 +58,11 @@ public sealed class JsonRpcDispatcherTests
             {"jsonrpc":"2.0","id":2,"method":"shadow.accounts.reconcile","params":{"collection":{"schemaVersion":1,"accounts":[]}}}
             """);
 
-        Assert.False(normal.RootElement.GetProperty("result").GetProperty("capabilities")[0].GetProperty("supported").GetBoolean());
+        var normalCapabilities = normal.RootElement.GetProperty("result").GetProperty("capabilities").EnumerateArray().ToArray();
+        Assert.False(normalCapabilities.Single(item => item.GetProperty("capabilityId").GetString() == "shadow.accounts.reconcile")
+            .GetProperty("supported").GetBoolean());
+        Assert.True(normalCapabilities.Single(item => item.GetProperty("capabilityId").GetString() == "accounts.updateMetadata")
+            .GetProperty("supported").GetBoolean());
         Assert.Equal(-32601, unavailable.RootElement.GetProperty("error").GetProperty("code").GetInt32());
 
         using var shadowDirectory = new TemporaryDirectory();
@@ -70,6 +74,9 @@ public sealed class JsonRpcDispatcherTests
         Assert.Equal("shadow.accounts.reconcile", capability.GetProperty("capabilityId").GetString());
         Assert.Equal(shadow.RootElement.GetProperty("result").GetProperty("protocolManifestSha256").GetString(),
             capability.GetProperty("extensions").GetProperty("protocolManifestSha256").GetString());
+        Assert.True(shadow.RootElement.GetProperty("result").GetProperty("capabilities").EnumerateArray()
+            .Single(item => item.GetProperty("capabilityId").GetString() == "accounts.updateMetadata")
+            .GetProperty("supported").GetBoolean());
     }
 
     [Fact]

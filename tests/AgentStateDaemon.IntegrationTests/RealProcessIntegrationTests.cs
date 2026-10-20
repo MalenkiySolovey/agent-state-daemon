@@ -165,6 +165,11 @@ public sealed class RealProcessIntegrationTests
             Assert.True(capability.GetProperty("supported").GetBoolean());
             Assert.Equal(CanonicalProtocolPin.ManifestSha256,
                 capability.GetProperty("extensions").GetProperty("protocolManifestSha256").GetString());
+            var metadataCapability = infoResult.GetProperty("capabilities").EnumerateArray()
+                .Single(item => item.GetProperty("capabilityId").GetString() == "accounts.updateMetadata");
+            Assert.True(metadataCapability.GetProperty("supported").GetBoolean());
+            Assert.Equal(CanonicalProtocolPin.ManifestSha256,
+                metadataCapability.GetProperty("extensions").GetProperty("protocolManifestSha256").GetString());
 
             using var inserted = JsonDocument.Parse(await SendShadowReconcileAsync(pipeName, 2, """
                 [

@@ -196,6 +196,13 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
                     _shadowMode,
                     new CapabilityExtensions(
                         CanonicalProtocolPin.SchemaVersion,
+                        CanonicalProtocolPin.ManifestSha256)),
+                new CapabilityResult(
+                    1,
+                    "accounts.updateMetadata",
+                    true,
+                    new CapabilityExtensions(
+                        CanonicalProtocolPin.SchemaVersion,
                         CanonicalProtocolPin.ManifestSha256))
             ]);
     }

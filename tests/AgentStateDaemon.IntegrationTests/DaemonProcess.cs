@@ -95,7 +95,10 @@ internal sealed class DaemonProcess : IAsyncDisposable
             }
         }
 
-        throw new TimeoutException("The daemon Named Pipe could not be reconnected after retries.", lastFailure);
+        var processState = _process.HasExited ? $"exited with code {_process.ExitCode}" : "still running";
+        throw new TimeoutException(
+            $"The daemon Named Pipe could not be reconnected after retries; process {processState}. Output: {Output}",
+            lastFailure);
     }
 
     public async Task WaitForOutputAsync(string expectedText)
