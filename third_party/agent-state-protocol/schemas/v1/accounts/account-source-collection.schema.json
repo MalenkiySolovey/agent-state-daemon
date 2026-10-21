@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-state-protocol:v1:accounts:account-source-collection",
+  "title": "AccountSourceCollection",
+  "description": "Bounded source-owned account metadata; entries cannot carry or change user nicknames.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "accounts"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "accounts": {
+      "type": "array",
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schemaVersion", "accountId", "safeFallbackDisplayName", "health", "isActive", "sortOrder", "createdAt", "planType"],
+        "properties": {
+          "schemaVersion": { "const": 1 },
+          "accountId": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "safeFallbackDisplayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "allOf": [
+              { "pattern": "\\S" },
+              { "not": { "pattern": "@" } }
+            ]
+          },
+          "health": { "type": "string", "enum": ["unknown", "valid", "needs_relogin"] },
+          "isActive": { "type": "boolean" },
+          "sortOrder": { "type": "integer", "minimum": 0 },
+          "createdAt": { "type": "string", "format": "date-time", "pattern": "Z$" },
+          "planType": { "type": ["string", "null"], "maxLength": 128 }
+        }
+      }
+    }
+  }
+}

@@ -25,9 +25,34 @@ internal sealed class DaemonProcess : IAsyncDisposable
 
     public string Output => string.Join('\n', _output);
 
-    public static async Task<DaemonProcess> StartAsync(string dataDirectory, string pipeName, bool shadowMode = false)
+    public static Task<DaemonProcess> StartAsync(
+        string dataDirectory,
+        string pipeName,
+        bool shadowMode = false,
+        bool experimentalNicknameAuthority = false)
     {
         var hostPath = Path.Combine(AppContext.BaseDirectory, "daemon-host", "AgentStateDaemon.Host.exe");
+        return StartFromHostAsync(hostPath, dataDirectory, pipeName, shadowMode, experimentalNicknameAuthority);
+    }
+
+    public static Task<DaemonProcess> StartBaselineAsync(string dataDirectory, string pipeName)
+    {
+        var hostPath = Environment.GetEnvironmentVariable("AGENT_STATE_DAEMON_BASELINE_HOST");
+        if (string.IsNullOrWhiteSpace(hostPath))
+        {
+            throw new InvalidOperationException("The exact previous daemon baseline was not configured by the quality gate.");
+        }
+
+        return StartFromHostAsync(hostPath, dataDirectory, pipeName, shadowMode: false, experimentalNicknameAuthority: false);
+    }
+
+    private static async Task<DaemonProcess> StartFromHostAsync(
+        string hostPath,
+        string dataDirectory,
+        string pipeName,
+        bool shadowMode,
+        bool experimentalNicknameAuthority)
+    {
         if (!File.Exists(hostPath))
         {
             throw new FileNotFoundException("The built daemon host executable was not copied to the integration-test directory.");
@@ -46,6 +71,8 @@ internal sealed class DaemonProcess : IAsyncDisposable
         startInfo.ArgumentList.Add(pipeName);
         if (shadowMode)
             startInfo.ArgumentList.Add("--shadow-mode");
+        if (experimentalNicknameAuthority)
+            startInfo.ArgumentList.Add("--experimental-nickname-authority");
 
         var process = Process.Start(startInfo) ?? throw new InvalidOperationException("The daemon process could not be started.");
         var daemon = new DaemonProcess(process, pipeName);

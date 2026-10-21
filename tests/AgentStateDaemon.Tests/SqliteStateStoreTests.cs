@@ -18,7 +18,7 @@ public sealed class SqliteStateStoreTests
 
         store.Initialize();
 
-        Assert.Equal(SqliteStateStore.CurrentSchemaVersion, store.SchemaVersionForTests());
+        Assert.Equal(1, store.SchemaVersionForTests());
         Assert.Equal("ok", store.IntegrityCheckForTests());
         var settings = store.DatabaseSettingsForTests();
         Assert.Equal("wal", settings.JournalMode, ignoreCase: true);

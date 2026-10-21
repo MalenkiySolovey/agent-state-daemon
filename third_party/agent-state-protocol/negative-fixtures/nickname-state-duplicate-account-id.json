@@ -1,0 +1,21 @@
+{
+  "schemaId": "urn:agent-state-protocol:v1:accounts:account-nickname-collection",
+  "expectedKeyword": "uniqueAccountId",
+  "instance": {
+    "schemaVersion": 1,
+    "accounts": [
+      {
+        "schemaVersion": 1,
+        "accountId": "account_duplicate",
+        "nickname": "Work",
+        "revision": "opaque-1"
+      },
+      {
+        "schemaVersion": 1,
+        "accountId": "account_duplicate",
+        "nickname": "Personal",
+        "revision": "opaque-2"
+      }
+    ]
+  }
+}

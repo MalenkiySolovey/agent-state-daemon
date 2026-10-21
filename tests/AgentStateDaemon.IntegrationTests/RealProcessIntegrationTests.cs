@@ -76,7 +76,7 @@ public sealed class RealProcessIntegrationTests
             var info = await firstClient.GetSystemInfoAsync();
             Assert.Equal(1, info.ProtocolSchemaVersion);
             Assert.Equal(CanonicalProtocolPin.ManifestSha256, info.ProtocolManifestSha256);
-            Assert.Equal(SqliteStateStore.CurrentSchemaVersion, info.DatabaseSchemaVersion);
+            Assert.Equal(1, info.DatabaseSchemaVersion);
             Assert.DoesNotContain(directory.Path, JsonSerializer.Serialize(info), StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(Environment.UserName, JsonSerializer.Serialize(info), StringComparison.OrdinalIgnoreCase);
 
@@ -231,6 +231,224 @@ public sealed class RealProcessIntegrationTests
         var recovered = Assert.Single((await restartedClient.ListAccountsAsync()).Collection.Accounts);
         Assert.Equal("synthetic-b", recovered.AccountId);
         Assert.Equal("Synthetic B2", recovered.DisplayName);
+    }
+
+    [Fact]
+    public async Task RealProcessNicknameAuthorityLifecycleFencesLegacyAndOldDaemonAcrossRollback()
+    {
+        using var preActivationDirectory = new IntegrationTemporaryDirectory();
+        var preActivationStore = new SqliteStateStore(preActivationDirectory.Path);
+        preActivationStore.Initialize();
+        await using (var oldDaemon = await DaemonProcess.StartBaselineAsync(preActivationDirectory.Path, TestPipeName()))
+        await using (var oldClient = await oldDaemon.ConnectClientAsync())
+        {
+            Assert.True(await oldClient.PingAsync());
+            Assert.Equal(1, (await oldClient.GetSystemInfoAsync()).DatabaseSchemaVersion);
+        }
+
+        using var directory = new IntegrationTemporaryDirectory();
+        var initializedStore = new SqliteStateStore(directory.Path);
+        initializedStore.Initialize();
+        var synthetic = CreateSyntheticAccount();
+        initializedStore.SeedForTests(synthetic);
+        var pipeName = TestPipeName();
+        NicknameAuthorityStatus active;
+
+        await using (var daemon = await DaemonProcess.StartAsync(
+            directory.Path,
+            pipeName,
+            shadowMode: true,
+            experimentalNicknameAuthority: true))
+        await using (var client = await daemon.ConnectClientAsync())
+        {
+            var info = await client.GetSystemInfoAsync();
+            Assert.Equal(CanonicalProtocolPin.ManifestSha256, info.ProtocolManifestSha256);
+            Assert.Equal(1, info.DatabaseSchemaVersion);
+            Assert.True(info.Capabilities.Single(item => item.CapabilityId == "accounts.nicknameAuthority.lifecycle").Supported);
+            Assert.True(info.Capabilities.Single(item => item.CapabilityId == "accounts.nicknameAuthority.lifecycle").Extensions!.Enabled);
+            Assert.True(info.Capabilities.Single(item => item.CapabilityId == "accounts.updateNickname").Supported);
+            Assert.False(info.Capabilities.Single(item => item.CapabilityId == "accounts.updateNickname").Extensions!.Enabled);
+
+            var initialAuthority = await client.GetNicknameAuthorityAsync();
+            Assert.Equal("LegacyLocal", initialAuthority.State);
+            Assert.Equal(0, initialAuthority.Epoch);
+            var exactInitialNickname = await client.GetNicknameAsync(synthetic.AccountId);
+            Assert.Null(exactInitialNickname.Nickname);
+            Assert.Equal(synthetic.Revision, exactInitialNickname.Revision);
+
+            var preparing = await client.BeginNicknameAuthorityPreparationAsync(initialAuthority.Epoch);
+            Assert.Equal("Preparing", preparing.State);
+            Assert.Equal(1, preparing.Epoch);
+            Assert.False(string.IsNullOrWhiteSpace(preparing.MigrationId));
+
+            var staleEpoch = await Assert.ThrowsAsync<AgentStateDaemonRpcException>(() =>
+                client.MarkNicknameAuthorityVerifiedAsync(initialAuthority.Epoch, preparing.MigrationId!));
+            Assert.Equal("authority_state_conflict", staleEpoch.ErrorCode);
+            var wrongMigration = await Assert.ThrowsAsync<AgentStateDaemonRpcException>(() =>
+                client.MarkNicknameAuthorityVerifiedAsync(preparing.Epoch, "wrong-migration"));
+            Assert.Equal("authority_state_conflict", wrongMigration.ErrorCode);
+
+            var legacyUpdate = await Assert.ThrowsAsync<AgentStateDaemonRpcException>(() => client.UpdateMetadataAsync(new AccountMetadataUpdate
+            {
+                SchemaVersion = 1,
+                AccountId = synthetic.AccountId,
+                Nickname = "Legacy overwrite",
+                ExpectedRevision = synthetic.Revision
+            }));
+            Assert.Equal("legacy_operation_fenced", legacyUpdate.ErrorCode);
+
+            using var legacyReconcile = JsonDocument.Parse(await SendRawAsync(pipeName,
+                "{\"jsonrpc\":\"2.0\",\"id\":501,\"method\":\"shadow.accounts.reconcile\",\"params\":{\"collection\":{\"schemaVersion\":1,\"accounts\":[]}}}"));
+            Assert.Equal("legacy_operation_fenced", legacyReconcile.RootElement.GetProperty("error").GetProperty("data").GetProperty("errorCode").GetString());
+
+            var preparingSet = await client.UpdateNicknameAsync(new AccountNicknameMutation
+            {
+                SchemaVersion = 1,
+                AccountId = synthetic.AccountId,
+                Nickname = "Work",
+                SafeFallbackDisplayName = "Account",
+                ExpectedRevision = exactInitialNickname.Revision
+            }, preparing.Epoch, preparing.MigrationId);
+            Assert.Equal("Work", preparingSet.NicknameState.Nickname);
+            Assert.Equal("Work", preparingSet.Account.DisplayName);
+
+            var sourceUpdate = new AccountSourceDescriptor
+            {
+                AccountId = synthetic.AccountId,
+                SafeFallbackDisplayName = "Account",
+                Health = "needs_relogin",
+                IsActive = false,
+                SortOrder = 4,
+                CreatedAt = "2026-10-20T12:00:00Z",
+                PlanType = "team"
+            };
+            var reconciled = await client.ReconcileSourceAccountsAsync(
+                new AccountSourceCollection { Accounts = [sourceUpdate] },
+                preparing.Epoch,
+                preparing.MigrationId);
+            Assert.Equal(1, reconciled.Updated);
+            var preserved = await client.GetNicknameAsync(synthetic.AccountId);
+            Assert.Equal("Work", preserved.Nickname);
+            Assert.NotEqual(preparingSet.NicknameState.Revision, preserved.Revision);
+            Assert.Equal("Work", (await client.GetAccountAsync(synthetic.AccountId)).Account.DisplayName);
+
+            var verified = await client.MarkNicknameAuthorityVerifiedAsync(preparing.Epoch, preparing.MigrationId!);
+            Assert.Equal("Verified", verified.State);
+            var frozenMutation = await Assert.ThrowsAsync<AgentStateDaemonRpcException>(() => client.UpdateNicknameAsync(
+                new AccountNicknameMutation
+                {
+                    SchemaVersion = 1,
+                    AccountId = synthetic.AccountId,
+                    Nickname = "Frozen",
+                    SafeFallbackDisplayName = "Account",
+                    ExpectedRevision = preserved.Revision
+                },
+                verified.Epoch,
+                verified.MigrationId));
+            Assert.Equal("authority_state_conflict", frozenMutation.ErrorCode);
+
+            active = await client.ActivateNicknameAuthorityAsync(verified.Epoch, verified.MigrationId!);
+            Assert.Equal("DaemonNicknameAuthority", active.State);
+            Assert.Equal(2, (await client.GetSystemInfoAsync()).DatabaseSchemaVersion);
+
+            var activeSet = await client.UpdateNicknameAsync(new AccountNicknameMutation
+            {
+                SchemaVersion = 1,
+                AccountId = synthetic.AccountId,
+                Nickname = "synthetic@active",
+                SafeFallbackDisplayName = "Account",
+                ExpectedRevision = preserved.Revision
+            }, active.Epoch, migrationId: null);
+            Assert.Equal("synthetic@active", activeSet.NicknameState.Nickname);
+            Assert.Equal("synthetic@active", activeSet.Account.DisplayName);
+
+            var clear = await client.UpdateNicknameAsync(new AccountNicknameMutation
+            {
+                SchemaVersion = 1,
+                AccountId = synthetic.AccountId,
+                Nickname = null,
+                SafeFallbackDisplayName = "Synthetic Base",
+                ExpectedRevision = activeSet.NicknameState.Revision
+            }, active.Epoch, migrationId: null);
+            Assert.Null(clear.NicknameState.Nickname);
+            Assert.Equal("Synthetic Base", clear.Account.DisplayName);
+            Assert.Equal("Synthetic Base", (await client.GetAccountAsync(synthetic.AccountId)).Account.DisplayName);
+            Assert.Equal(synthetic.AccountId, Assert.Single((await client.ListNicknamesAsync()).Accounts).AccountId);
+        }
+
+        var oldActiveFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DaemonProcess.StartBaselineAsync(directory.Path, TestPipeName()));
+        Assert.Contains("unsupported_schema_version", oldActiveFailure.Message, StringComparison.Ordinal);
+
+        await using (var restarted = await DaemonProcess.StartAsync(directory.Path, TestPipeName()))
+        await using (var restartedClient = await restarted.ConnectClientAsync())
+        {
+            Assert.Equal("DaemonNicknameAuthority", (await restartedClient.GetNicknameAuthorityAsync()).State);
+            var restartedInfo = await restartedClient.GetSystemInfoAsync();
+            Assert.Equal(2, restartedInfo.DatabaseSchemaVersion);
+            Assert.True(restartedInfo.Capabilities.Single(item => item.CapabilityId == "accounts.updateNickname").Extensions!.Enabled);
+            var currentNickname = await restartedClient.GetNicknameAsync(synthetic.AccountId);
+            var updatedWhileFlagOff = await restartedClient.UpdateNicknameAsync(new AccountNicknameMutation
+            {
+                SchemaVersion = 1,
+                AccountId = synthetic.AccountId,
+                Nickname = "Restarted active",
+                SafeFallbackDisplayName = "Account",
+                ExpectedRevision = currentNickname.Revision
+            }, active.Epoch, migrationId: null);
+            Assert.Equal("Restarted active", updatedWhileFlagOff.NicknameState.Nickname);
+        }
+
+        NicknameAuthorityStatus rollbackRequired;
+        await using (var rollbackHost = await DaemonProcess.StartAsync(
+            directory.Path,
+            TestPipeName(),
+            experimentalNicknameAuthority: true))
+        await using (var rollbackClient = await rollbackHost.ConnectClientAsync())
+        {
+            rollbackRequired = await rollbackClient.BeginNicknameAuthorityRollbackAsync(active.Epoch, active.MigrationId!);
+            Assert.Equal("RollbackRequired", rollbackRequired.State);
+            var rollbackRevision = (await rollbackClient.GetNicknameAsync(synthetic.AccountId)).Revision;
+            var sourceFrozen = await Assert.ThrowsAsync<AgentStateDaemonRpcException>(() => rollbackClient.ReconcileSourceAccountsAsync(
+                new AccountSourceCollection { Accounts = [] }, rollbackRequired.Epoch, rollbackRequired.MigrationId));
+            Assert.Equal("authority_state_conflict", sourceFrozen.ErrorCode);
+            var frozenMutation = await Assert.ThrowsAsync<AgentStateDaemonRpcException>(() =>
+                rollbackClient.UpdateNicknameAsync(new AccountNicknameMutation
+                {
+                    SchemaVersion = 1,
+                    AccountId = synthetic.AccountId,
+                    Nickname = "Frozen rollback",
+                    SafeFallbackDisplayName = "Account",
+                    ExpectedRevision = rollbackRevision
+                }, rollbackRequired.Epoch, rollbackRequired.MigrationId));
+            Assert.Equal("authority_state_conflict", frozenMutation.ErrorCode);
+        }
+
+        await using (var rollbackRestart = await DaemonProcess.StartAsync(
+            directory.Path,
+            TestPipeName(),
+            experimentalNicknameAuthority: true))
+        await using (var rollbackClient = await rollbackRestart.ConnectClientAsync())
+        {
+            Assert.Equal("RollbackRequired", (await rollbackClient.GetNicknameAuthorityAsync()).State);
+            var rollbackRevision = (await rollbackClient.GetNicknameAsync(synthetic.AccountId)).Revision;
+            var legacyFence = await Assert.ThrowsAsync<AgentStateDaemonRpcException>(() => rollbackClient.UpdateMetadataAsync(new AccountMetadataUpdate
+            {
+                SchemaVersion = 1,
+                AccountId = synthetic.AccountId,
+                Nickname = "Legacy overwrite",
+                ExpectedRevision = rollbackRevision
+            }));
+            Assert.Equal("legacy_operation_fenced", legacyFence.ErrorCode);
+
+            var completed = await rollbackClient.CompleteNicknameAuthorityRollbackAsync(rollbackRequired.Epoch, rollbackRequired.MigrationId!);
+            Assert.Equal("LegacyLocal", completed.State);
+            Assert.Equal(2, (await rollbackClient.GetSystemInfoAsync()).DatabaseSchemaVersion);
+        }
+
+        var oldRollbackFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DaemonProcess.StartBaselineAsync(directory.Path, TestPipeName()));
+        Assert.Contains("unsupported_schema_version", oldRollbackFailure.Message, StringComparison.Ordinal);
     }
 
     [Fact]

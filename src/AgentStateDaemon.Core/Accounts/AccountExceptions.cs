@@ -12,6 +12,11 @@ internal sealed class AccountValidationException : Exception
 {
 }
 
+internal sealed class AuthorityOperationException(string errorCode) : Exception
+{
+    public string ErrorCode { get; } = errorCode;
+}
+
 internal sealed class DaemonStorageException : Exception
 {
     public DaemonStorageException(string errorCode, bool retryable = false)

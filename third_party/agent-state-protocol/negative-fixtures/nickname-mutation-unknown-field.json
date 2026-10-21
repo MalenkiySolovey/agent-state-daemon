@@ -1,0 +1,12 @@
+{
+  "schemaId": "urn:agent-state-protocol:v1:accounts:account-nickname-mutation",
+  "expectedKeyword": "additionalProperties",
+  "instance": {
+    "schemaVersion": 1,
+    "accountId": "account_synthetic_01",
+    "nickname": "Work",
+    "safeFallbackDisplayName": "Account",
+    "expectedRevision": "opaque-revision-1",
+    "unexpected": true
+  }
+}

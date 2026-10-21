@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "accountId": "account_synthetic_01",
+  "nickname": "Personal",
+  "safeFallbackDisplayName": "Account",
+  "expectedRevision": "opaque-revision-2"
+}

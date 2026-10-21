@@ -23,6 +23,7 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
     private readonly Action<string, string, long>? _safeLog;
     private readonly ShadowAccountService? _shadowAccounts;
     private readonly bool _shadowMode;
+    private readonly NicknameAuthorityService? _nicknameAuthority;
 
     public JsonRpcDispatcher(
         AccountService accounts,
@@ -31,7 +32,8 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
         TimeProvider? timeProvider = null,
         Action<string, string, long>? safeLog = null,
         ShadowAccountService? shadowAccounts = null,
-        bool shadowMode = false)
+        bool shadowMode = false,
+        NicknameAuthorityService? nicknameAuthority = null)
     {
         _accounts = accounts;
         _daemonVersion = daemonVersion;
@@ -40,6 +42,7 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
         _safeLog = safeLog;
         _shadowAccounts = shadowAccounts;
         _shadowMode = shadowMode && shadowAccounts is not null;
+        _nicknameAuthority = nicknameAuthority;
     }
 
     public byte[]? Dispatch(ReadOnlyMemory<byte> request)
@@ -123,6 +126,19 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
                 ? SerializeError(responseId, -32602, "Invalid params", CreateDetail("validation_failed", "Request parameters are invalid."))
                 : null;
         }
+        catch (AuthorityOperationException exception)
+        {
+            resultCategory = exception.ErrorCode;
+            var (code, message) = exception.ErrorCode switch
+            {
+                "legacy_operation_fenced" => (-32011, "Legacy operation is fenced by nickname authority state."),
+                "experimental_feature_disabled" => (-32012, "Experimental nickname authority is disabled."),
+                _ => (-32010, "Nickname authority state changed or does not allow this operation.")
+            };
+            response = hasId
+                ? SerializeError(responseId, code, message, CreateDetail(exception.ErrorCode, message))
+                : null;
+        }
         catch (DaemonStorageException exception)
         {
             resultCategory = exception.ErrorCode;
@@ -168,6 +184,16 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
         "accounts.get" => InvokeGet(parameters),
         "accounts.updateMetadata" => InvokeUpdate(parameters),
         "shadow.accounts.reconcile" => InvokeShadowReconcile(parameters),
+        "accounts.nicknameAuthority.get" => InvokeAuthorityGet(parameters),
+        "accounts.nicknameAuthority.beginPreparation" => InvokeBeginPreparation(parameters),
+        "accounts.nicknameAuthority.markVerified" => InvokeMarkVerified(parameters),
+        "accounts.nicknameAuthority.activate" => InvokeActivate(parameters),
+        "accounts.nicknameAuthority.beginRollback" => InvokeBeginRollback(parameters),
+        "accounts.nicknameAuthority.completeRollback" => InvokeCompleteRollback(parameters),
+        "accounts.getNickname" => InvokeGetNickname(parameters),
+        "accounts.listNicknames" => InvokeListNicknames(parameters),
+        "accounts.updateNickname" => InvokeUpdateNickname(parameters),
+        "shadow.accounts.reconcileSource" => InvokeSourceReconcile(parameters),
         _ => throw new RpcMethodNotFoundException()
     };
 
@@ -181,29 +207,41 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
     {
         ValidateEmptyParameters(parameters);
         var now = _timeProvider.GetUtcNow();
+        var authority = _nicknameAuthority?.GetStatus();
+        var authorityState = authority?.State ?? NicknameAuthorityStates.LegacyLocal;
+        var experimentalEnabled = _nicknameAuthority?.ExperimentalEnabled ?? false;
+        var authorityWritesEnabled = authorityState == NicknameAuthorityStates.DaemonNicknameAuthority ||
+            (authorityState == NicknameAuthorityStates.Preparing && experimentalEnabled);
+        var databaseSchemaVersion = _nicknameAuthority?.GetDatabaseSchemaVersion() ?? 1;
+        var lifecycleEnabled = experimentalEnabled &&
+            (authorityState != NicknameAuthorityStates.LegacyLocal || databaseSchemaVersion == 1);
+        CapabilityResult Capability(string capabilityId, bool supported, bool enabled) => new(
+            1,
+            capabilityId,
+            supported,
+            new CapabilityExtensions(
+                CanonicalProtocolPin.SchemaVersion,
+                CanonicalProtocolPin.ManifestSha256,
+                enabled,
+                authorityState,
+                experimentalEnabled));
         return new SystemInfoResult(
             _daemonVersion,
             CanonicalProtocolPin.SchemaVersion,
             CanonicalProtocolPin.ManifestSha256,
-            SqliteSchemaVersion: 1,
+            SqliteSchemaVersion: databaseSchemaVersion,
             StartedAt: FormatTimestamp(_startedAt),
             UptimeSeconds: Math.Max(0, (long)(now - _startedAt).TotalSeconds),
             Capabilities:
             [
-                new CapabilityResult(
-                    1,
-                    "shadow.accounts.reconcile",
-                    _shadowMode,
-                    new CapabilityExtensions(
-                        CanonicalProtocolPin.SchemaVersion,
-                        CanonicalProtocolPin.ManifestSha256)),
-                new CapabilityResult(
-                    1,
-                    "accounts.updateMetadata",
-                    true,
-                    new CapabilityExtensions(
-                        CanonicalProtocolPin.SchemaVersion,
-                        CanonicalProtocolPin.ManifestSha256))
+                Capability("shadow.accounts.reconcile", _shadowMode, _shadowMode && authorityState == NicknameAuthorityStates.LegacyLocal),
+                Capability("accounts.updateMetadata", true, authorityState == NicknameAuthorityStates.LegacyLocal),
+                Capability("accounts.getNickname", _nicknameAuthority is not null, _nicknameAuthority is not null),
+                Capability("accounts.listNicknames", _nicknameAuthority is not null, _nicknameAuthority is not null),
+                Capability("accounts.updateNickname", _nicknameAuthority is not null, authorityWritesEnabled),
+                Capability("shadow.accounts.reconcileSource", _nicknameAuthority is not null, authorityWritesEnabled),
+                Capability("accounts.nicknameAuthority.get", _nicknameAuthority is not null, _nicknameAuthority is not null),
+                Capability("accounts.nicknameAuthority.lifecycle", _nicknameAuthority is not null, lifecycleEnabled)
             ]);
     }
 
@@ -287,6 +325,130 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
         return new ShadowReconcileRpcResult(1, result.Inserted, result.Updated, result.Deleted, result.Unchanged);
     }
 
+    private NicknameAuthorityStatus InvokeAuthorityGet(JsonElement parameters)
+    {
+        ValidateEmptyParameters(parameters);
+        return RequireNicknameAuthority().GetStatus();
+    }
+
+    private NicknameAuthorityStatus InvokeBeginPreparation(JsonElement parameters)
+    {
+        var values = ReadObject(parameters, ["expectedAuthorityEpoch"]);
+        return RequireNicknameAuthority().BeginPreparation(ReadRequiredInt64(values, "expectedAuthorityEpoch"));
+    }
+
+    private NicknameAuthorityStatus InvokeMarkVerified(JsonElement parameters)
+    {
+        var values = ReadObject(parameters, ["expectedAuthorityEpoch", "migrationId"]);
+        return RequireNicknameAuthority().MarkVerified(
+            ReadRequiredInt64(values, "expectedAuthorityEpoch"),
+            ReadRequiredString(values, "migrationId", 1, 256));
+    }
+
+    private NicknameAuthorityStatus InvokeActivate(JsonElement parameters)
+    {
+        var values = ReadObject(parameters, ["expectedAuthorityEpoch", "migrationId"]);
+        return RequireNicknameAuthority().Activate(
+            ReadRequiredInt64(values, "expectedAuthorityEpoch"),
+            ReadRequiredString(values, "migrationId", 1, 256));
+    }
+
+    private NicknameAuthorityStatus InvokeBeginRollback(JsonElement parameters)
+    {
+        var values = ReadObject(parameters, ["expectedAuthorityEpoch", "migrationId"]);
+        return RequireNicknameAuthority().BeginRollback(
+            ReadRequiredInt64(values, "expectedAuthorityEpoch"),
+            ReadRequiredString(values, "migrationId", 1, 256));
+    }
+
+    private NicknameAuthorityStatus InvokeCompleteRollback(JsonElement parameters)
+    {
+        var values = ReadObject(parameters, ["expectedAuthorityEpoch", "migrationId"]);
+        return RequireNicknameAuthority().CompleteRollback(
+            ReadRequiredInt64(values, "expectedAuthorityEpoch"),
+            ReadRequiredString(values, "migrationId", 1, 256));
+    }
+
+    private AccountNicknameState InvokeGetNickname(JsonElement parameters)
+    {
+        var values = ReadObject(parameters, ["accountId"]);
+        return RequireNicknameAuthority().GetNickname(ReadRequiredString(values, "accountId", 1, 256));
+    }
+
+    private AccountNicknameCollection InvokeListNicknames(JsonElement parameters)
+    {
+        ValidateEmptyParameters(parameters);
+        return RequireNicknameAuthority().ListNicknames();
+    }
+
+    private NicknameMutationResult InvokeUpdateNickname(JsonElement parameters)
+    {
+        var values = ReadObject(parameters, ["mutation", "expectedAuthorityEpoch", "migrationId"]);
+        if (!values.TryGetValue("mutation", out var mutationElement))
+            throw new RpcInvalidParamsException();
+
+        var mutationValues = ReadObject(mutationElement,
+            ["schemaVersion", "accountId", "nickname", "safeFallbackDisplayName", "expectedRevision"]);
+        var nickname = ReadNullableString(mutationValues, "nickname", 256);
+        var mutation = new AccountNicknameMutation
+        {
+            SchemaVersion = ReadRequiredInt32(mutationValues, "schemaVersion"),
+            AccountId = ReadRequiredString(mutationValues, "accountId", 0, 256),
+            Nickname = nickname,
+            SafeFallbackDisplayName = ReadRequiredString(mutationValues, "safeFallbackDisplayName", 0, 256),
+            ExpectedRevision = ReadRequiredString(mutationValues, "expectedRevision", 0, 256)
+        };
+        return RequireNicknameAuthority().UpdateNickname(
+            mutation,
+            ReadRequiredInt64(values, "expectedAuthorityEpoch"),
+            ReadOptionalString(values, "migrationId", 256));
+    }
+
+    private SourceReconcileResult InvokeSourceReconcile(JsonElement parameters)
+    {
+        var values = ReadObject(parameters, ["collection", "expectedAuthorityEpoch", "migrationId"]);
+        if (!values.TryGetValue("collection", out var collectionElement))
+            throw new RpcInvalidParamsException();
+
+        var collectionValues = ReadObject(collectionElement, ["schemaVersion", "accounts"]);
+        if (!collectionValues.TryGetValue("accounts", out var accountsElement) || accountsElement.ValueKind != JsonValueKind.Array ||
+            accountsElement.GetArrayLength() > AccountService.MaximumAccountCount)
+        {
+            throw new RpcInvalidParamsException();
+        }
+
+        var accounts = new List<AccountSourceDescriptor>(accountsElement.GetArrayLength());
+        foreach (var accountElement in accountsElement.EnumerateArray())
+        {
+            var accountValues = ReadObject(accountElement,
+                ["schemaVersion", "accountId", "safeFallbackDisplayName", "health", "isActive", "sortOrder", "createdAt", "planType"]);
+            accounts.Add(new AccountSourceDescriptor
+            {
+                SchemaVersion = ReadRequiredInt32(accountValues, "schemaVersion"),
+                AccountId = ReadRequiredString(accountValues, "accountId", 0, 256),
+                SafeFallbackDisplayName = ReadRequiredString(accountValues, "safeFallbackDisplayName", 0, 256),
+                Health = ReadRequiredString(accountValues, "health", 0, 32),
+                IsActive = ReadRequiredBoolean(accountValues, "isActive"),
+                SortOrder = ReadRequiredInt32(accountValues, "sortOrder"),
+                CreatedAt = ReadRequiredString(accountValues, "createdAt", 0, 64),
+                PlanType = ReadNullableString(accountValues, "planType", 128)
+            });
+        }
+
+        var collection = new AccountSourceCollection
+        {
+            SchemaVersion = ReadRequiredInt32(collectionValues, "schemaVersion"),
+            Accounts = accounts
+        };
+        return RequireNicknameAuthority().ReconcileSource(
+            collection,
+            ReadRequiredInt64(values, "expectedAuthorityEpoch"),
+            ReadOptionalString(values, "migrationId", 256));
+    }
+
+    private NicknameAuthorityService RequireNicknameAuthority() =>
+        _nicknameAuthority ?? throw new RpcMethodNotFoundException();
+
     private static Dictionary<string, JsonElement> ReadObject(JsonElement parameters, string[] allowedNames)
     {
         if (parameters.ValueKind != JsonValueKind.Object)
@@ -330,6 +492,13 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
         return result;
     }
 
+    private static long ReadRequiredInt64(Dictionary<string, JsonElement> values, string name)
+    {
+        if (!values.TryGetValue(name, out var value) || value.ValueKind != JsonValueKind.Number || !value.TryGetInt64(out var result))
+            throw new RpcInvalidParamsException();
+        return result;
+    }
+
     private static bool ReadRequiredBoolean(Dictionary<string, JsonElement> values, string name)
     {
         if (!values.TryGetValue(name, out var value) || value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
@@ -348,6 +517,18 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
 
         var result = value.GetString();
         if (result is null || result.Length > maximumLength)
+            throw new RpcInvalidParamsException();
+        return result;
+    }
+
+    private static string? ReadOptionalString(Dictionary<string, JsonElement> values, string name, int maximumLength)
+    {
+        if (!values.TryGetValue(name, out var value) || value.ValueKind == JsonValueKind.Null)
+            return null;
+        if (value.ValueKind != JsonValueKind.String)
+            throw new RpcInvalidParamsException();
+        var result = value.GetString();
+        if (string.IsNullOrWhiteSpace(result) || result.Length > maximumLength)
             throw new RpcInvalidParamsException();
         return result;
     }
@@ -373,7 +554,11 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
     }
 
     private bool IsKnownMethod(string method) => method is
-        "system.ping" or "system.info" or "accounts.list" or "accounts.get" or "accounts.updateMetadata" ||
+        "system.ping" or "system.info" or "accounts.list" or "accounts.get" or "accounts.updateMetadata" or
+        "accounts.nicknameAuthority.get" or "accounts.nicknameAuthority.beginPreparation" or
+        "accounts.nicknameAuthority.markVerified" or "accounts.nicknameAuthority.activate" or
+        "accounts.nicknameAuthority.beginRollback" or "accounts.nicknameAuthority.completeRollback" or
+        "accounts.getNickname" or "accounts.listNicknames" or "accounts.updateNickname" or "shadow.accounts.reconcileSource" ||
         (_shadowMode && method == "shadow.accounts.reconcile");
 
     private static byte[] SerializeSuccess(JsonElement id, object result)
@@ -423,7 +608,10 @@ internal sealed class JsonRpcDispatcher : IJsonRpcDispatcher
 
     private sealed record CapabilityExtensions(
         [property: JsonPropertyName("protocolSchemaVersion")] int ProtocolSchemaVersion,
-        [property: JsonPropertyName("protocolManifestSha256")] string ProtocolManifestSha256);
+        [property: JsonPropertyName("protocolManifestSha256")] string ProtocolManifestSha256,
+        [property: JsonPropertyName("enabled")] bool Enabled,
+        [property: JsonPropertyName("authorityState")] string AuthorityState,
+        [property: JsonPropertyName("experimentalNicknameAuthorityEnabled")] bool ExperimentalNicknameAuthorityEnabled);
 
     private sealed record ShadowReconcileRpcResult(
         [property: JsonPropertyName("schemaVersion")] int SchemaVersion,

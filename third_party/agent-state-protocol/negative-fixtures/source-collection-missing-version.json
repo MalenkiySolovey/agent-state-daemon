@@ -1,0 +1,18 @@
+{
+  "schemaId": "urn:agent-state-protocol:v1:accounts:account-source-collection",
+  "expectedKeyword": "required",
+  "instance": {
+    "accounts": [
+      {
+        "schemaVersion": 1,
+        "accountId": "account_synthetic_01",
+        "safeFallbackDisplayName": "Synthetic account",
+        "health": "valid",
+        "isActive": false,
+        "sortOrder": 0,
+        "createdAt": "2026-10-01T12:00:00Z",
+        "planType": null
+      }
+    ]
+  }
+}

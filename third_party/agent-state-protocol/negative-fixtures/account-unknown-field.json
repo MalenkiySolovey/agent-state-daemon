@@ -1,5 +1,6 @@
 {
   "schemaId": "urn:agent-state-protocol:v1:accounts:account-descriptor",
+  "expectedKeyword": "additionalProperties",
   "instance": {
     "schemaVersion": 1,
     "accountId": "account_demo_01",

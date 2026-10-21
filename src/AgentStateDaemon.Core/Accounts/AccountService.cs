@@ -53,7 +53,7 @@ internal sealed class AccountService(IAccountRepository repository)
         Revision = record.Revision
     };
 
-    private static AccountDescriptor ToDescriptor(AccountRecord record) => new()
+    internal static AccountDescriptor ToDescriptor(AccountRecord record) => new()
     {
         AccountId = record.AccountId,
         DisplayName = string.IsNullOrEmpty(record.Nickname) ? record.DisplayName : record.Nickname,

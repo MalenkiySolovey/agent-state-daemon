@@ -48,7 +48,8 @@ internal static class Program
                 timeProvider,
                 WriteRpcLog,
                 options.ShadowMode ? new ShadowAccountService(store) : null,
-                options.ShadowMode);
+                options.ShadowMode,
+                new NicknameAuthorityService(store, store, options.ExperimentalNicknameAuthority));
             var server = new NamedPipeRpcServer(options.PipeName, dispatcher, WriteRpcLog);
 
             using var shutdown = new CancellationTokenSource();
@@ -60,7 +61,7 @@ internal static class Program
             Console.CancelKeyPress += cancelHandler;
             try
             {
-                Console.WriteLine($"event=daemon_started version={version} protocol_schema_version=1 shadow_mode={options.ShadowMode.ToString().ToLowerInvariant()}");
+                Console.WriteLine($"event=daemon_started version={version} protocol_schema_version=1 shadow_mode={options.ShadowMode.ToString().ToLowerInvariant()} experimental_nickname_authority={options.ExperimentalNicknameAuthority.ToString().ToLowerInvariant()}");
                 try
                 {
                     await server.RunAsync(shutdown.Token).ConfigureAwait(false);

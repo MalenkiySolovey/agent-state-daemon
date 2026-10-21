@@ -1,0 +1,10 @@
+{
+  "schemaId": "urn:agent-state-protocol:v1:accounts:account-nickname-state",
+  "expectedKeyword": "pattern",
+  "instance": {
+    "schemaVersion": 1,
+    "accountId": "account_synthetic_01",
+    "nickname": "   ",
+    "revision": "opaque-revision-1"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "accounts": [
+    {
+      "schemaVersion": 1,
+      "accountId": "account_synthetic_01",
+      "safeFallbackDisplayName": "Synthetic account one",
+      "health": "valid",
+      "isActive": false,
+      "sortOrder": 0,
+      "createdAt": "2026-10-01T12:00:00Z",
+      "planType": null
+    },
+    {
+      "schemaVersion": 1,
+      "accountId": "account_synthetic_02",
+      "safeFallbackDisplayName": "Synthetic account two",
+      "health": "unknown",
+      "isActive": false,
+      "sortOrder": 1,
+      "createdAt": "2026-10-02T12:00:00Z",
+      "planType": "synthetic-plan"
+    }
+  ]
+}

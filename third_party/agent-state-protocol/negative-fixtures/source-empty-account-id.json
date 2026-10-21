@@ -1,0 +1,14 @@
+{
+  "schemaId": "urn:agent-state-protocol:v1:accounts:account-source-descriptor",
+  "expectedKeyword": "minLength",
+  "instance": {
+    "schemaVersion": 1,
+    "accountId": "",
+    "safeFallbackDisplayName": "Synthetic account",
+    "health": "valid",
+    "isActive": false,
+    "sortOrder": 0,
+    "createdAt": "2026-10-01T12:00:00Z",
+    "planType": null
+  }
+}

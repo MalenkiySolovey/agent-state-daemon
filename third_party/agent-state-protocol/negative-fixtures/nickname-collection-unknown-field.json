@@ -1,0 +1,16 @@
+{
+  "schemaId": "urn:agent-state-protocol:v1:accounts:account-nickname-collection",
+  "expectedKeyword": "additionalProperties",
+  "instance": {
+    "schemaVersion": 1,
+    "accounts": [
+      {
+        "schemaVersion": 1,
+        "accountId": "account_synthetic_01",
+        "nickname": null,
+        "revision": "opaque-revision-1"
+      }
+    ],
+    "nickname": "Work"
+  }
+}

@@ -65,6 +65,79 @@ public sealed class AgentStateDaemonClient : IAsyncDisposable
     public Task<RevisionedAccount> UpdateMetadataAsync(AccountMetadataUpdate update, CancellationToken cancellationToken = default) =>
         SendAsync<RevisionedAccount>("accounts.updateMetadata", update, cancellationToken);
 
+    public Task<AccountNicknameState> GetNicknameAsync(string accountId, CancellationToken cancellationToken = default) =>
+        SendAsync<AccountNicknameState>("accounts.getNickname", new AccountIdParameters(accountId), cancellationToken);
+
+    public Task<AccountNicknameCollection> ListNicknamesAsync(CancellationToken cancellationToken = default) =>
+        SendAsync<AccountNicknameCollection>("accounts.listNicknames", null, cancellationToken);
+
+    public Task<NicknameMutationResult> UpdateNicknameAsync(
+        AccountNicknameMutation mutation,
+        long expectedAuthorityEpoch,
+        string? migrationId,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<NicknameMutationResult>(
+            "accounts.updateNickname",
+            new NicknameMutationParameters(mutation, expectedAuthorityEpoch, migrationId),
+            cancellationToken);
+
+    public Task<SourceReconcileResult> ReconcileSourceAccountsAsync(
+        AccountSourceCollection collection,
+        long expectedAuthorityEpoch,
+        string? migrationId,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<SourceReconcileResult>(
+            "shadow.accounts.reconcileSource",
+            new SourceReconcileParameters(collection, expectedAuthorityEpoch, migrationId),
+            cancellationToken);
+
+    public Task<NicknameAuthorityStatus> GetNicknameAuthorityAsync(CancellationToken cancellationToken = default) =>
+        SendAsync<NicknameAuthorityStatus>("accounts.nicknameAuthority.get", null, cancellationToken);
+
+    public Task<NicknameAuthorityStatus> BeginNicknameAuthorityPreparationAsync(
+        long expectedAuthorityEpoch,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<NicknameAuthorityStatus>(
+            "accounts.nicknameAuthority.beginPreparation",
+            new AuthorityEpochParameters(expectedAuthorityEpoch),
+            cancellationToken);
+
+    public Task<NicknameAuthorityStatus> MarkNicknameAuthorityVerifiedAsync(
+        long expectedAuthorityEpoch,
+        string migrationId,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<NicknameAuthorityStatus>(
+            "accounts.nicknameAuthority.markVerified",
+            new AuthorityLifecycleParameters(expectedAuthorityEpoch, migrationId),
+            cancellationToken);
+
+    public Task<NicknameAuthorityStatus> ActivateNicknameAuthorityAsync(
+        long expectedAuthorityEpoch,
+        string migrationId,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<NicknameAuthorityStatus>(
+            "accounts.nicknameAuthority.activate",
+            new AuthorityLifecycleParameters(expectedAuthorityEpoch, migrationId),
+            cancellationToken);
+
+    public Task<NicknameAuthorityStatus> BeginNicknameAuthorityRollbackAsync(
+        long expectedAuthorityEpoch,
+        string migrationId,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<NicknameAuthorityStatus>(
+            "accounts.nicknameAuthority.beginRollback",
+            new AuthorityLifecycleParameters(expectedAuthorityEpoch, migrationId),
+            cancellationToken);
+
+    public Task<NicknameAuthorityStatus> CompleteNicknameAuthorityRollbackAsync(
+        long expectedAuthorityEpoch,
+        string migrationId,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<NicknameAuthorityStatus>(
+            "accounts.nicknameAuthority.completeRollback",
+            new AuthorityLifecycleParameters(expectedAuthorityEpoch, migrationId),
+            cancellationToken);
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
@@ -197,6 +270,23 @@ public sealed class AgentStateDaemonClient : IAsyncDisposable
     private sealed record AccountIdParameters(
         [property: JsonPropertyName("accountId")] string AccountId);
 
+    private sealed record AuthorityEpochParameters(
+        [property: JsonPropertyName("expectedAuthorityEpoch")] long ExpectedAuthorityEpoch);
+
+    private sealed record AuthorityLifecycleParameters(
+        [property: JsonPropertyName("expectedAuthorityEpoch")] long ExpectedAuthorityEpoch,
+        [property: JsonPropertyName("migrationId")] string MigrationId);
+
+    private sealed record NicknameMutationParameters(
+        [property: JsonPropertyName("mutation")] AccountNicknameMutation Mutation,
+        [property: JsonPropertyName("expectedAuthorityEpoch")] long ExpectedAuthorityEpoch,
+        [property: JsonPropertyName("migrationId")] string? MigrationId);
+
+    private sealed record SourceReconcileParameters(
+        [property: JsonPropertyName("collection")] AccountSourceCollection Collection,
+        [property: JsonPropertyName("expectedAuthorityEpoch")] long ExpectedAuthorityEpoch,
+        [property: JsonPropertyName("migrationId")] string? MigrationId);
+
     private sealed record PingResult(
         [property: JsonPropertyName("alive")] bool Alive);
 }
@@ -220,6 +310,42 @@ public sealed record SystemInfo
 
     [JsonPropertyName("uptimeSeconds")]
     public long UptimeSeconds { get; init; }
+
+    [JsonPropertyName("capabilities")]
+    public IReadOnlyList<SystemCapability> Capabilities { get; init; } = Array.Empty<SystemCapability>();
+}
+
+public sealed record SystemCapability
+{
+    [JsonPropertyName("schemaVersion")]
+    public int SchemaVersion { get; init; }
+
+    [JsonPropertyName("capabilityId")]
+    public required string CapabilityId { get; init; }
+
+    [JsonPropertyName("supported")]
+    public bool Supported { get; init; }
+
+    [JsonPropertyName("extensions")]
+    public SystemCapabilityExtensions? Extensions { get; init; }
+}
+
+public sealed record SystemCapabilityExtensions
+{
+    [JsonPropertyName("protocolSchemaVersion")]
+    public int ProtocolSchemaVersion { get; init; }
+
+    [JsonPropertyName("protocolManifestSha256")]
+    public required string ProtocolManifestSha256 { get; init; }
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; init; }
+
+    [JsonPropertyName("authorityState")]
+    public string? AuthorityState { get; init; }
+
+    [JsonPropertyName("experimentalNicknameAuthorityEnabled")]
+    public bool ExperimentalNicknameAuthorityEnabled { get; init; }
 }
 
 public sealed class AgentStateDaemonRpcException(int jsonRpcCode, string errorCode, string message) : Exception(message)

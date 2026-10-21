@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-state-protocol:v1:accounts:account-nickname-collection",
+  "title": "AccountNicknameCollection",
+  "description": "Bounded collection of exact nickname states; nickname presence is not inferred from display names.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "accounts"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "accounts": {
+      "type": "array",
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schemaVersion", "accountId", "nickname", "revision"],
+        "properties": {
+          "schemaVersion": { "const": 1 },
+          "accountId": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "nickname": { "type": ["string", "null"], "minLength": 1, "maxLength": 256, "pattern": "\\S" },
+          "revision": { "type": "string", "minLength": 1, "maxLength": 256 }
+        }
+      }
+    }
+  }
+}

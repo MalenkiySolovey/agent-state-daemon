@@ -80,6 +80,47 @@ public sealed class JsonRpcDispatcherTests
     }
 
     [Fact]
+    public void NicknameCapabilitiesDistinguishSupportFromDisabledLegacyMode()
+    {
+        using var directory = new TemporaryDirectory();
+        var dispatcher = CreateDispatcher(directory.Path);
+        using var info = Dispatch(dispatcher, """
+            {"jsonrpc":"2.0","id":1,"method":"system.info","params":{}}
+            """);
+        var capabilities = info.RootElement.GetProperty("result").GetProperty("capabilities");
+        var nicknameWrite = capabilities.EnumerateArray().Single(item => item.GetProperty("capabilityId").GetString() == "accounts.updateNickname");
+        Assert.True(nicknameWrite.GetProperty("supported").GetBoolean());
+        Assert.False(nicknameWrite.GetProperty("extensions").GetProperty("enabled").GetBoolean());
+        Assert.Equal("LegacyLocal", nicknameWrite.GetProperty("extensions").GetProperty("authorityState").GetString());
+        Assert.Equal(CanonicalProtocolPin.ManifestSha256,
+            nicknameWrite.GetProperty("extensions").GetProperty("protocolManifestSha256").GetString());
+        Assert.Equal(1, info.RootElement.GetProperty("result").GetProperty("databaseSchemaVersion").GetInt32());
+
+        using var disabled = Dispatch(dispatcher, """
+            {"jsonrpc":"2.0","id":2,"method":"accounts.nicknameAuthority.beginPreparation","params":{"expectedAuthorityEpoch":0}}
+            """);
+        Assert.Equal(-32012, disabled.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+        Assert.Equal("experimental_feature_disabled", disabled.RootElement.GetProperty("error").GetProperty("data").GetProperty("errorCode").GetString());
+    }
+
+    [Fact]
+    public void NewNicknameRpcRejectsUnknownFieldsAndUsesExactNullClearShape()
+    {
+        using var directory = new TemporaryDirectory();
+        var dispatcher = CreateDispatcher(directory.Path);
+
+        using var unknown = Dispatch(dispatcher, """
+            {"jsonrpc":"2.0","id":1,"method":"shadow.accounts.reconcileSource","params":{"collection":{"schemaVersion":1,"accounts":[],"nickname":"No"},"expectedAuthorityEpoch":0}}
+            """);
+        Assert.Equal(-32602, unknown.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+
+        using var wrongNicknameType = Dispatch(dispatcher, """
+            {"jsonrpc":"2.0","id":2,"method":"accounts.updateNickname","params":{"mutation":{"schemaVersion":1,"accountId":"synthetic","nickname":"","safeFallbackDisplayName":"Base","expectedRevision":"revision"},"expectedAuthorityEpoch":0}}
+            """);
+        Assert.Equal(-32602, wrongNicknameType.RootElement.GetProperty("error").GetProperty("code").GetInt32());
+    }
+
+    [Fact]
     public void ShadowReconcileInsertsUpdatesDeletesAndReadsBackCanonicalProjection()
     {
         using var directory = new TemporaryDirectory();
@@ -279,7 +320,12 @@ public sealed class JsonRpcDispatcherTests
     {
         var store = new SqliteStateStore(dataDirectory);
         store.Initialize();
-        return new JsonRpcDispatcher(new AccountService(store), "0.1.0-experimental", DateTimeOffset.UtcNow, safeLog: safeLog);
+        return new JsonRpcDispatcher(
+            new AccountService(store),
+            "0.1.0-experimental",
+            DateTimeOffset.UtcNow,
+            safeLog: safeLog,
+            nicknameAuthority: new NicknameAuthorityService(store, store, experimentalEnabled: false));
     }
 
     private static JsonRpcDispatcher CreateShadowDispatcher(string dataDirectory, Action? beforeCommit = null)
@@ -291,7 +337,8 @@ public sealed class JsonRpcDispatcherTests
             "0.1.0-experimental",
             DateTimeOffset.UtcNow,
             shadowAccounts: new ShadowAccountService(store),
-            shadowMode: true);
+            shadowMode: true,
+            nicknameAuthority: new NicknameAuthorityService(store, store, experimentalEnabled: false));
     }
 
     private static JsonDocument ShadowRequest(JsonRpcDispatcher dispatcher, int id, string accountsJson) =>

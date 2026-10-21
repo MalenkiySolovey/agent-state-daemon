@@ -1,0 +1,11 @@
+{
+  "schemaId": "urn:agent-state-protocol:v1:accounts:account-nickname-mutation",
+  "expectedKeyword": "pattern",
+  "instance": {
+    "schemaVersion": 1,
+    "accountId": "account_synthetic_01",
+    "nickname": "   ",
+    "safeFallbackDisplayName": "Account",
+    "expectedRevision": "opaque-revision-1"
+  }
+}

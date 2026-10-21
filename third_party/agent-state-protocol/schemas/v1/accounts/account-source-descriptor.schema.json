@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-state-protocol:v1:accounts:account-source-descriptor",
+  "title": "AccountSourceDescriptor",
+  "description": "Source-owned account metadata and a privacy-safe fallback projection; it cannot carry or change a user nickname.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "accountId", "safeFallbackDisplayName", "health", "isActive", "sortOrder", "createdAt", "planType"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "accountId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "safeFallbackDisplayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "allOf": [
+        { "pattern": "\\S" },
+        { "not": { "pattern": "@" } }
+      ]
+    },
+    "health": { "type": "string", "enum": ["unknown", "valid", "needs_relogin"] },
+    "isActive": { "type": "boolean" },
+    "sortOrder": { "type": "integer", "minimum": 0 },
+    "createdAt": { "type": "string", "format": "date-time", "pattern": "Z$" },
+    "planType": { "type": ["string", "null"], "maxLength": 128 }
+  }
+}

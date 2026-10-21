@@ -28,6 +28,51 @@
       ]
     },
     {
+      "id": "urn:agent-state-protocol:v1:accounts:account-nickname-collection",
+      "path": "schemas/v1/accounts/account-nickname-collection.schema.json",
+      "sha256": "daa49c848e7ea48972332660e8b5ad57ee0bcd2eb23c9ecfe20f1f52111a1aa3",
+      "examples": [
+        "examples/v1/account-nickname-collection.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:accounts:account-nickname-mutation",
+      "path": "schemas/v1/accounts/account-nickname-mutation.schema.json",
+      "sha256": "33c9d2df11dfc4d6516542bd0b9d1b26047fe525522ceb6af293fc47132ee825",
+      "examples": [
+        "examples/v1/account-nickname-mutation-at.example.json",
+        "examples/v1/account-nickname-mutation-clear.example.json",
+        "examples/v1/account-nickname-mutation-rename.example.json",
+        "examples/v1/account-nickname-mutation.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:accounts:account-nickname-state",
+      "path": "schemas/v1/accounts/account-nickname-state.schema.json",
+      "sha256": "155cb81aaec822e50edefc64cdc68acdb4ac537cebf59afc86d8642c930466ad",
+      "examples": [
+        "examples/v1/account-nickname-state-at.example.json",
+        "examples/v1/account-nickname-state-null.example.json",
+        "examples/v1/account-nickname-state.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:accounts:account-source-collection",
+      "path": "schemas/v1/accounts/account-source-collection.schema.json",
+      "sha256": "5bf4466bd4985e4c5a336a2c808a6637680ad3bde8835efc4b5ba858166c1dcf",
+      "examples": [
+        "examples/v1/account-source-collection.example.json"
+      ]
+    },
+    {
+      "id": "urn:agent-state-protocol:v1:accounts:account-source-descriptor",
+      "path": "schemas/v1/accounts/account-source-descriptor.schema.json",
+      "sha256": "28a59a9d9ebd8286fc06b5440c60ead811fc42d6df6b42a63e93c9344a0c2fad",
+      "examples": [
+        "examples/v1/account-source-descriptor.example.json"
+      ]
+    },
+    {
       "id": "urn:agent-state-protocol:v1:common:capability-descriptor",
       "path": "schemas/v1/common/capability-descriptor.schema.json",
       "sha256": "710d0e87a25d2376c8558fe077e05d414177b494ed89ee5211ef791956caa06a",

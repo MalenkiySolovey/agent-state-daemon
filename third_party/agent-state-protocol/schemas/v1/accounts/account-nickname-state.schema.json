@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-state-protocol:v1:accounts:account-nickname-state",
+  "title": "AccountNicknameState",
+  "description": "Exact user-selected nickname state, independent from AccountDescriptor.displayName.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "accountId", "nickname", "revision"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "accountId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "nickname": { "type": ["string", "null"], "minLength": 1, "maxLength": 256, "pattern": "\\S" },
+    "revision": { "type": "string", "minLength": 1, "maxLength": 256 }
+  }
+}

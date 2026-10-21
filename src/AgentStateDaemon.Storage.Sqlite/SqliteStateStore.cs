@@ -1,18 +1,25 @@
 using System.Globalization;
+using System.Text.Json;
 using AgentStateDaemon.Core.Accounts;
+using AgentStateDaemon.Core.Protocol;
 using Microsoft.Data.Sqlite;
 
 namespace AgentStateDaemon.Storage.Sqlite;
 
-internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepository
+internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepository, INicknameAuthorityRepository
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
     public const int BusyTimeoutMilliseconds = 5_000;
+    private const string AuthorityMarkerKey = "nickname_authority_state";
+    private const string InitialMigrationId = "0001_initial";
+    private const string NicknameAuthorityMigrationId = "0002_nickname_authority";
+    private static readonly JsonSerializerOptions MarkerJsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly string _databasePath;
     private readonly TimeProvider _timeProvider;
     private readonly Action<string>? _migrationObserver;
     private readonly Action? _beforeAccountCommit;
+    private readonly Action<string>? _activationObserver;
     private int _unhealthy;
     private bool _initialized;
 
@@ -25,7 +32,8 @@ internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepos
         string dataDirectory,
         TimeProvider timeProvider,
         Action<string>? migrationObserver,
-        Action? beforeAccountCommit)
+        Action? beforeAccountCommit,
+        Action<string>? activationObserver = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataDirectory);
         var fullPath = Path.GetFullPath(dataDirectory);
@@ -34,6 +42,7 @@ internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepos
         _timeProvider = timeProvider;
         _migrationObserver = migrationObserver;
         _beforeAccountCommit = beforeAccountCommit;
+        _activationObserver = activationObserver;
     }
 
     public void Initialize()
@@ -54,6 +63,7 @@ internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepos
 
             VerifyIntegrity(connection);
             ApplyMigrations(connection);
+            EnsureAuthorityMarkerAndValidate(connection);
             VerifyIntegrity(connection);
             _initialized = true;
         }
@@ -134,7 +144,8 @@ internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepos
         try
         {
             using var connection = OpenConnection();
-            using var transaction = connection.BeginTransaction();
+            using var transaction = connection.BeginTransaction(deferred: false);
+            EnsureLegacyLocal(connection, transaction);
             var current = TryGet(connection, transaction, accountId);
             if (current is null)
             {
@@ -185,7 +196,8 @@ internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepos
         try
         {
             using var connection = OpenConnection();
-            using var transaction = connection.BeginTransaction();
+            using var transaction = connection.BeginTransaction(deferred: false);
+            EnsureLegacyLocal(connection, transaction);
             var currentAccounts = ReadAccounts(connection, transaction);
             var currentById = currentAccounts.ToDictionary(account => account.AccountId, StringComparer.Ordinal);
             var targetIds = new HashSet<string>(accounts.Select(account => account.AccountId), StringComparer.Ordinal);
@@ -239,6 +251,233 @@ internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepos
         }
     }
 
+    public int GetDatabaseSchemaVersion()
+    {
+        EnsureInitialized();
+        try
+        {
+            using var connection = OpenConnection();
+            return checked((int)ExecuteScalarInt64(connection, "PRAGMA user_version;"));
+        }
+        catch (SqliteException exception)
+        {
+            throw MapStorageError(exception);
+        }
+    }
+
+    public NicknameAuthorityStatus GetAuthorityStatus()
+    {
+        EnsureInitialized();
+        try
+        {
+            using var connection = OpenConnection();
+            return ToStatus(ReadAuthorityMarker(connection, transaction: null)
+                ?? throw new DaemonStorageException("database_unhealthy"));
+        }
+        catch (SqliteException exception)
+        {
+            throw MapStorageError(exception);
+        }
+    }
+
+    public NicknameAuthorityStatus TransitionAuthority(
+        string expectedState,
+        string nextState,
+        long expectedEpoch,
+        string? expectedMigrationId,
+        string? nextMigrationId)
+    {
+        EnsureInitialized();
+        try
+        {
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction(deferred: false);
+            var marker = ReadAuthorityMarker(connection, transaction)
+                ?? throw new DaemonStorageException("database_unhealthy");
+            if (marker.State != expectedState || marker.Epoch != expectedEpoch ||
+                !string.Equals(marker.MigrationId, expectedMigrationId, StringComparison.Ordinal) ||
+                marker.Epoch == long.MaxValue || !IsLegalTransition(expectedState, nextState))
+            {
+                throw new AuthorityOperationException("authority_state_conflict");
+            }
+
+            var databaseVersion = checked((int)ExecuteScalarInt64(connection, transaction, "PRAGMA user_version;"));
+            var activating = nextState == NicknameAuthorityStates.DaemonNicknameAuthority;
+            if (activating)
+            {
+                _activationObserver?.Invoke("after_verified_read");
+                if (expectedState != NicknameAuthorityStates.Verified || databaseVersion != 1 ||
+                    !HasExactMigrationLedger(connection, transaction, 1))
+                {
+                    throw new DaemonStorageException("database_unhealthy");
+                }
+            }
+            else if (nextState == NicknameAuthorityStates.Preparing && databaseVersion != 1)
+            {
+                throw new AuthorityOperationException("authority_state_conflict");
+            }
+
+            var updatedMarker = new AuthorityMarker(
+                nextState,
+                marker.Epoch + 1,
+                CanonicalProtocolPin.ManifestSha256,
+                nextMigrationId);
+            WriteAuthorityMarker(connection, transaction, updatedMarker);
+
+            if (activating)
+            {
+                _activationObserver?.Invoke("after_marker_update");
+                using (var ledgerCommand = connection.CreateCommand())
+                {
+                    ledgerCommand.Transaction = transaction;
+                    ledgerCommand.CommandText = "INSERT INTO schema_migrations (migration_id, applied_at_utc) VALUES ($migration_id, $applied_at);";
+                    ledgerCommand.Parameters.AddWithValue("$migration_id", NicknameAuthorityMigrationId);
+                    ledgerCommand.Parameters.AddWithValue("$applied_at", FormatTimestamp(_timeProvider.GetUtcNow()));
+                    ledgerCommand.ExecuteNonQuery();
+                }
+
+                _activationObserver?.Invoke("after_ledger_insert");
+                using (var versionCommand = connection.CreateCommand())
+                {
+                    versionCommand.Transaction = transaction;
+                    versionCommand.CommandText = "PRAGMA user_version=2;";
+                    versionCommand.ExecuteNonQuery();
+                }
+
+                _activationObserver?.Invoke("after_user_version_update");
+                _activationObserver?.Invoke("before_activation_commit");
+            }
+
+            transaction.Commit();
+            return ToStatus(updatedMarker);
+        }
+        catch (SqliteException exception)
+        {
+            throw MapStorageError(exception);
+        }
+    }
+
+    public AccountRecord UpdateNicknameWithAuthority(AccountNicknameMutation mutation, long expectedAuthorityEpoch, string? migrationId)
+    {
+        EnsureInitialized();
+        try
+        {
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction(deferred: false);
+            EnsureAuthorityWriteAllowed(connection, transaction, expectedAuthorityEpoch, migrationId, allowPreparing: true);
+
+            var current = TryGet(connection, transaction, mutation.AccountId);
+            if (current is null)
+                throw new AccountNotFoundException();
+            if (!string.Equals(current.Revision, mutation.ExpectedRevision, StringComparison.Ordinal))
+                throw new AccountRevisionConflictException();
+            if (mutation.Nickname is not null && mutation.SafeFallbackDisplayName != "Account")
+                throw new AccountValidationException();
+            if (string.IsNullOrWhiteSpace(mutation.SafeFallbackDisplayName) || mutation.SafeFallbackDisplayName.Length > 256 ||
+                mutation.SafeFallbackDisplayName.Contains('@'))
+                throw new AccountValidationException();
+
+            var newRevision = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+            using (var command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = """
+                    UPDATE accounts
+                    SET nickname = $nickname,
+                        display_name = $display_name,
+                        revision = $revision,
+                        updated_at_utc = $updated_at
+                    WHERE account_id = $account_id AND revision = $expected_revision;
+                    """;
+                command.Parameters.AddWithValue("$nickname", (object?)mutation.Nickname ?? DBNull.Value);
+                command.Parameters.AddWithValue("$display_name", mutation.SafeFallbackDisplayName);
+                command.Parameters.AddWithValue("$revision", newRevision);
+                command.Parameters.AddWithValue("$updated_at", FormatTimestamp(_timeProvider.GetUtcNow()));
+                command.Parameters.AddWithValue("$account_id", mutation.AccountId);
+                command.Parameters.AddWithValue("$expected_revision", mutation.ExpectedRevision);
+                if (command.ExecuteNonQuery() != 1)
+                    throw new AccountRevisionConflictException();
+            }
+
+            _beforeAccountCommit?.Invoke();
+            var updated = TryGet(connection, transaction, mutation.AccountId) ?? throw new DaemonStorageException("storage_failure");
+            transaction.Commit();
+            return updated;
+        }
+        catch (SqliteException exception)
+        {
+            throw MapStorageError(exception);
+        }
+    }
+
+    public ShadowAccountReconcileResult ReconcileSourceAccounts(
+        IReadOnlyList<AccountSourceDescriptor> accounts,
+        long expectedAuthorityEpoch,
+        string? migrationId)
+    {
+        EnsureInitialized();
+        try
+        {
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction(deferred: false);
+            var marker = EnsureAuthorityWriteAllowed(connection, transaction, expectedAuthorityEpoch, migrationId, allowPreparing: true);
+            var currentAccounts = ReadAccounts(connection, transaction);
+            var currentById = currentAccounts.ToDictionary(account => account.AccountId, StringComparer.Ordinal);
+            var targetIds = new HashSet<string>(accounts.Select(account => account.AccountId), StringComparer.Ordinal);
+            var inserted = 0;
+            var updated = 0;
+            var unchanged = 0;
+
+            foreach (var target in accounts)
+            {
+                if (!ShadowAccountService.TryParseUtcTimestamp(target.CreatedAt, out var createdAt))
+                    throw new AccountValidationException();
+
+                if (currentById.TryGetValue(target.AccountId, out var current))
+                {
+                    if (current.Nickname is not null && target.SafeFallbackDisplayName != "Account")
+                        throw new AccountValidationException();
+
+                    if (IsSourceProjectionEqual(current, target, createdAt))
+                    {
+                        unchanged++;
+                        continue;
+                    }
+
+                    UpdateSourceAccount(connection, transaction, target, createdAt);
+                    updated++;
+                }
+                else
+                {
+                    InsertSourceAccount(connection, transaction, target, createdAt);
+                    inserted++;
+                }
+            }
+
+            var deleted = 0;
+            foreach (var current in currentAccounts)
+            {
+                if (targetIds.Contains(current.AccountId))
+                    continue;
+
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = "DELETE FROM accounts WHERE account_id = $account_id;";
+                command.Parameters.AddWithValue("$account_id", current.AccountId);
+                deleted += command.ExecuteNonQuery();
+            }
+
+            _ = marker;
+            _beforeAccountCommit?.Invoke();
+            transaction.Commit();
+            return new ShadowAccountReconcileResult(inserted, updated, deleted, unchanged);
+        }
+        catch (SqliteException exception)
+        {
+            throw MapStorageError(exception);
+        }
+    }
+
     internal void SeedForTests(AccountRecord account)
     {
         EnsureInitialized();
@@ -282,6 +521,62 @@ internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepos
         using var connection = OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = $"PRAGMA user_version={version.ToString(CultureInfo.InvariantCulture)};";
+        command.ExecuteNonQuery();
+    }
+
+    internal void DeleteAuthorityMarkerForTests()
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM daemon_meta WHERE meta_key=$key;";
+        command.Parameters.AddWithValue("$key", AuthorityMarkerKey);
+        command.ExecuteNonQuery();
+    }
+
+    internal void SetAuthorityMarkerForTests(string value)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO daemon_meta (meta_key, meta_value) VALUES ($key, $value) ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value;";
+        command.Parameters.AddWithValue("$key", AuthorityMarkerKey);
+        command.Parameters.AddWithValue("$value", value);
+        command.ExecuteNonQuery();
+    }
+
+    internal string? GetAuthorityMarkerForTests()
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT meta_value FROM daemon_meta WHERE meta_key=$key;";
+        command.Parameters.AddWithValue("$key", AuthorityMarkerKey);
+        return command.ExecuteScalar() as string;
+    }
+
+    internal bool HasMigrationForTests(string migrationId)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM schema_migrations WHERE migration_id=$migration_id;";
+        command.Parameters.AddWithValue("$migration_id", migrationId);
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture) == 1;
+    }
+
+    internal void AddMigrationForTests(string migrationId)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO schema_migrations (migration_id, applied_at_utc) VALUES ($migration_id, $applied_at);";
+        command.Parameters.AddWithValue("$migration_id", migrationId);
+        command.Parameters.AddWithValue("$applied_at", FormatTimestamp(_timeProvider.GetUtcNow()));
+        command.ExecuteNonQuery();
+    }
+
+    internal void RemoveMigrationForTests(string migrationId)
+    {
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM schema_migrations WHERE migration_id=$migration_id;";
+        command.Parameters.AddWithValue("$migration_id", migrationId);
         command.ExecuteNonQuery();
     }
 
@@ -388,14 +683,212 @@ internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepos
             throw new DaemonStorageException("database_unhealthy");
         }
 
-        using var verify = connection.CreateCommand();
-        verify.CommandText = "SELECT COUNT(*) FROM schema_migrations WHERE migration_id='0001_initial';";
-        if (Convert.ToInt64(verify.ExecuteScalar(), CultureInfo.InvariantCulture) != 1 ||
-            ExecuteScalarInt64(connection, "SELECT COUNT(*) FROM schema_migrations;") != 1)
+        if (!HasExactMigrationLedger(connection, transaction: null, userVersion))
         {
             throw new DaemonStorageException("database_unhealthy");
         }
     }
+
+    private static void EnsureAuthorityMarkerAndValidate(SqliteConnection connection)
+    {
+        var version = checked((int)ExecuteScalarInt64(connection, "PRAGMA user_version;"));
+        if (version is not (1 or 2) || !HasExactMigrationLedger(connection, transaction: null, version))
+            throw new DaemonStorageException("database_unhealthy");
+
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var marker = ReadAuthorityMarker(connection, transaction);
+        if (marker is null)
+        {
+            if (version != 1)
+                throw new DaemonStorageException("database_unhealthy");
+
+            marker = new AuthorityMarker(
+                NicknameAuthorityStates.LegacyLocal,
+                0,
+                CanonicalProtocolPin.ManifestSha256,
+                null);
+            WriteAuthorityMarker(connection, transaction, marker);
+        }
+
+        if (!IsValidMarker(marker) || !string.Equals(marker.ProtocolManifestSha256, CanonicalProtocolPin.ManifestSha256, StringComparison.Ordinal))
+            throw new DaemonStorageException("database_unhealthy");
+
+        var validCombination = version switch
+        {
+            1 => marker.State is NicknameAuthorityStates.LegacyLocal or NicknameAuthorityStates.Preparing or NicknameAuthorityStates.Verified,
+            2 => marker.State is NicknameAuthorityStates.DaemonNicknameAuthority or NicknameAuthorityStates.RollbackRequired or NicknameAuthorityStates.LegacyLocal,
+            _ => false
+        };
+        if (!validCombination ||
+            (version == 1 && marker.State == NicknameAuthorityStates.LegacyLocal && (marker.Epoch != 0 || marker.MigrationId is not null)) ||
+            (version == 2 && (marker.MigrationId is null ||
+                (marker.State == NicknameAuthorityStates.LegacyLocal && marker.Epoch < 5))))
+        {
+            throw new DaemonStorageException("database_unhealthy");
+        }
+
+        transaction.Commit();
+    }
+
+    private static bool HasExactMigrationLedger(SqliteConnection connection, SqliteTransaction? transaction, int version)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT migration_id FROM schema_migrations ORDER BY migration_id COLLATE BINARY;";
+        using var reader = command.ExecuteReader();
+        var migrations = new List<string>();
+        while (reader.Read())
+            migrations.Add(reader.GetString(0));
+
+        return version switch
+        {
+            1 => migrations.Count == 1 && migrations[0] == InitialMigrationId,
+            2 => migrations.Count == 2 && migrations[0] == InitialMigrationId && migrations[1] == NicknameAuthorityMigrationId,
+            _ => false
+        };
+    }
+
+    private static AuthorityMarker? ReadAuthorityMarker(SqliteConnection connection, SqliteTransaction? transaction)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT meta_value FROM daemon_meta WHERE meta_key=$key;";
+        command.Parameters.AddWithValue("$key", AuthorityMarkerKey);
+        var value = command.ExecuteScalar();
+        if (value is null or DBNull)
+            return null;
+
+        try
+        {
+            var markerText = (string)value;
+            if (markerText.Length > 2_048)
+                throw new DaemonStorageException("database_unhealthy");
+
+            using var document = JsonDocument.Parse(markerText, new JsonDocumentOptions { MaxDepth = 4 });
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                throw new DaemonStorageException("database_unhealthy");
+
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in root.EnumerateObject())
+            {
+                if (property.Name is not ("state" or "epoch" or "protocolManifestSha256" or "migrationId") || !names.Add(property.Name))
+                    throw new DaemonStorageException("database_unhealthy");
+            }
+
+            if (names.Count != 4 ||
+                !root.TryGetProperty("state", out var stateElement) || stateElement.ValueKind != JsonValueKind.String ||
+                !root.TryGetProperty("epoch", out var epochElement) || !epochElement.TryGetInt64(out var epoch) ||
+                !root.TryGetProperty("protocolManifestSha256", out var digestElement) || digestElement.ValueKind != JsonValueKind.String ||
+                !root.TryGetProperty("migrationId", out var migrationElement) ||
+                migrationElement.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+            {
+                throw new DaemonStorageException("database_unhealthy");
+            }
+
+            var marker = new AuthorityMarker(
+                stateElement.GetString()!,
+                epoch,
+                digestElement.GetString()!,
+                migrationElement.ValueKind == JsonValueKind.Null ? null : migrationElement.GetString());
+            if (!IsValidMarker(marker) ||
+                !string.Equals(marker.ProtocolManifestSha256, CanonicalProtocolPin.ManifestSha256, StringComparison.Ordinal))
+            {
+                throw new DaemonStorageException("database_unhealthy");
+            }
+
+            return marker;
+        }
+        catch (JsonException)
+        {
+            throw new DaemonStorageException("database_unhealthy");
+        }
+    }
+
+    private static void WriteAuthorityMarker(SqliteConnection connection, SqliteTransaction transaction, AuthorityMarker marker)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO daemon_meta (meta_key, meta_value) VALUES ($key, $value)
+            ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value;
+            """;
+        command.Parameters.AddWithValue("$key", AuthorityMarkerKey);
+        command.Parameters.AddWithValue("$value", JsonSerializer.Serialize(marker, MarkerJsonOptions));
+        command.ExecuteNonQuery();
+    }
+
+    private static bool IsValidMarker(AuthorityMarker? marker)
+    {
+        if (marker is null || marker.Epoch < 0 || string.IsNullOrWhiteSpace(marker.ProtocolManifestSha256))
+            return false;
+
+        return marker.State switch
+        {
+            NicknameAuthorityStates.LegacyLocal => marker.MigrationId is null || IsValidMigrationId(marker.MigrationId),
+            NicknameAuthorityStates.Preparing => marker.Epoch >= 1 && IsValidMigrationId(marker.MigrationId),
+            NicknameAuthorityStates.Verified => marker.Epoch >= 2 && IsValidMigrationId(marker.MigrationId),
+            NicknameAuthorityStates.DaemonNicknameAuthority => marker.Epoch >= 3 && IsValidMigrationId(marker.MigrationId),
+            NicknameAuthorityStates.RollbackRequired => marker.Epoch >= 4 && IsValidMigrationId(marker.MigrationId),
+            _ => false
+        };
+    }
+
+    private static bool IsValidMigrationId(string? migrationId) =>
+        !string.IsNullOrWhiteSpace(migrationId) && migrationId.Length <= 256;
+
+    private static NicknameAuthorityStatus ToStatus(AuthorityMarker marker) => new()
+    {
+        State = marker.State,
+        Epoch = marker.Epoch,
+        ProtocolManifestSha256 = marker.ProtocolManifestSha256,
+        MigrationId = marker.MigrationId
+    };
+
+    private static bool IsLegalTransition(string currentState, string nextState) => (currentState, nextState) switch
+    {
+        (NicknameAuthorityStates.LegacyLocal, NicknameAuthorityStates.Preparing) => true,
+        (NicknameAuthorityStates.Preparing, NicknameAuthorityStates.Verified) => true,
+        (NicknameAuthorityStates.Verified, NicknameAuthorityStates.DaemonNicknameAuthority) => true,
+        (NicknameAuthorityStates.DaemonNicknameAuthority, NicknameAuthorityStates.RollbackRequired) => true,
+        (NicknameAuthorityStates.RollbackRequired, NicknameAuthorityStates.LegacyLocal) => true,
+        _ => false
+    };
+
+    private static AuthorityMarker EnsureLegacyLocal(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        var marker = ReadAuthorityMarker(connection, transaction)
+            ?? throw new DaemonStorageException("database_unhealthy");
+        if (marker.State != NicknameAuthorityStates.LegacyLocal)
+            throw new AuthorityOperationException("legacy_operation_fenced");
+        return marker;
+    }
+
+    private static AuthorityMarker EnsureAuthorityWriteAllowed(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long expectedAuthorityEpoch,
+        string? migrationId,
+        bool allowPreparing)
+    {
+        var marker = ReadAuthorityMarker(connection, transaction)
+            ?? throw new DaemonStorageException("database_unhealthy");
+        if (marker.Epoch != expectedAuthorityEpoch ||
+            (marker.State != NicknameAuthorityStates.DaemonNicknameAuthority &&
+             !(allowPreparing && marker.State == NicknameAuthorityStates.Preparing)) ||
+            (marker.State == NicknameAuthorityStates.Preparing && !string.Equals(marker.MigrationId, migrationId, StringComparison.Ordinal)))
+        {
+            throw new AuthorityOperationException("authority_state_conflict");
+        }
+
+        return marker;
+    }
+
+    private sealed record AuthorityMarker(
+        string State,
+        long Epoch,
+        string ProtocolManifestSha256,
+        string? MigrationId);
 
     private SqliteConnection OpenConnection()
         => OpenConnection(createIfMissing: false);
@@ -471,6 +964,17 @@ internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepos
         current.CreatedAtUtc == targetCreatedAt &&
         string.Equals(current.PlanType, target.PlanType, StringComparison.Ordinal);
 
+    private static bool IsSourceProjectionEqual(
+        AccountRecord current,
+        AccountSourceDescriptor target,
+        DateTimeOffset targetCreatedAt) =>
+        string.Equals(current.DisplayName, target.SafeFallbackDisplayName, StringComparison.Ordinal) &&
+        string.Equals(current.Health, target.Health, StringComparison.Ordinal) &&
+        current.IsActive == target.IsActive &&
+        current.SortOrder == target.SortOrder &&
+        current.CreatedAtUtc == targetCreatedAt &&
+        string.Equals(current.PlanType, target.PlanType, StringComparison.Ordinal);
+
     private void InsertShadowAccount(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -523,6 +1027,66 @@ internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepos
     {
         command.Parameters.AddWithValue("$account_id", account.AccountId);
         command.Parameters.AddWithValue("$display_name", account.DisplayName);
+        command.Parameters.AddWithValue("$health", account.Health);
+        command.Parameters.AddWithValue("$is_active", account.IsActive ? 1 : 0);
+        command.Parameters.AddWithValue("$sort_order", account.SortOrder);
+        command.Parameters.AddWithValue("$created_at_utc", createdAt.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$plan_type", (object?)account.PlanType ?? DBNull.Value);
+        command.Parameters.AddWithValue("$revision", Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$updated_at", FormatTimestamp(_timeProvider.GetUtcNow()));
+    }
+
+    private void InsertSourceAccount(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        AccountSourceDescriptor account,
+        DateTimeOffset createdAt)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO accounts (
+                account_id, display_name, nickname, health, is_active, sort_order,
+                created_at_utc, plan_type, revision, updated_at_utc)
+            VALUES (
+                $account_id, $display_name, NULL, $health, $is_active, $sort_order,
+                $created_at_utc, $plan_type, $revision, $updated_at);
+            """;
+        AddSourceAccountParameters(command, account, createdAt);
+        command.ExecuteNonQuery();
+    }
+
+    private void UpdateSourceAccount(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        AccountSourceDescriptor account,
+        DateTimeOffset createdAt)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE accounts
+            SET display_name = $display_name,
+                health = $health,
+                is_active = $is_active,
+                sort_order = $sort_order,
+                created_at_utc = $created_at_utc,
+                plan_type = $plan_type,
+                revision = $revision,
+                updated_at_utc = $updated_at
+            WHERE account_id = $account_id;
+            """;
+        AddSourceAccountParameters(command, account, createdAt);
+        command.ExecuteNonQuery();
+    }
+
+    private void AddSourceAccountParameters(
+        SqliteCommand command,
+        AccountSourceDescriptor account,
+        DateTimeOffset createdAt)
+    {
+        command.Parameters.AddWithValue("$account_id", account.AccountId);
+        command.Parameters.AddWithValue("$display_name", account.SafeFallbackDisplayName);
         command.Parameters.AddWithValue("$health", account.Health);
         command.Parameters.AddWithValue("$is_active", account.IsActive ? 1 : 0);
         command.Parameters.AddWithValue("$sort_order", account.SortOrder);
@@ -591,6 +1155,14 @@ internal sealed class SqliteStateStore : IAccountRepository, IShadowAccountRepos
     private static long ExecuteScalarInt64(SqliteConnection connection, string sql)
     {
         using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    private static long ExecuteScalarInt64(SqliteConnection connection, SqliteTransaction transaction, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = sql;
         return Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
     }

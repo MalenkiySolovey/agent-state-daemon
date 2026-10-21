@@ -1,5 +1,6 @@
 {
   "schemaId": "urn:agent-state-protocol:v1:accounts:account-descriptor",
+  "expectedKeyword": "required",
   "instance": {
     "accountId": "account_demo_01",
     "displayName": "Example account 1",

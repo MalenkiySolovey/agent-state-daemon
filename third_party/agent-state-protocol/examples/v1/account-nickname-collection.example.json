@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "accounts": [
+    {
+      "schemaVersion": 1,
+      "accountId": "account_synthetic_01",
+      "nickname": "Work",
+      "revision": "opaque-revision-1"
+    },
+    {
+      "schemaVersion": 1,
+      "accountId": "account_synthetic_02",
+      "nickname": null,
+      "revision": "opaque-revision-2"
+    }
+  ]
+}

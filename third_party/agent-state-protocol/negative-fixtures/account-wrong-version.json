@@ -1,5 +1,6 @@
 {
   "schemaId": "urn:agent-state-protocol:v1:accounts:account-descriptor",
+  "expectedKeyword": "const",
   "instance": {
     "schemaVersion": 2,
     "accountId": "account_demo_01",

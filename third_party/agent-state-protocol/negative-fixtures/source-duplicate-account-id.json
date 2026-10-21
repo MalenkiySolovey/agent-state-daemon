@@ -1,0 +1,29 @@
+{
+  "schemaId": "urn:agent-state-protocol:v1:accounts:account-source-collection",
+  "expectedKeyword": "uniqueAccountId",
+  "instance": {
+    "schemaVersion": 1,
+    "accounts": [
+      {
+        "schemaVersion": 1,
+        "accountId": "account_duplicate",
+        "safeFallbackDisplayName": "Synthetic one",
+        "health": "valid",
+        "isActive": false,
+        "sortOrder": 0,
+        "createdAt": "2026-10-01T12:00:00Z",
+        "planType": null
+      },
+      {
+        "schemaVersion": 1,
+        "accountId": "account_duplicate",
+        "safeFallbackDisplayName": "Synthetic two",
+        "health": "valid",
+        "isActive": false,
+        "sortOrder": 0,
+        "createdAt": "2026-10-01T12:00:00Z",
+        "planType": null
+      }
+    ]
+  }
+}

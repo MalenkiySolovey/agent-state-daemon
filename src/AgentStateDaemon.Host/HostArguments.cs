@@ -1,16 +1,18 @@
 namespace AgentStateDaemon.Host;
 
-internal sealed record HostArguments(string DataDirectory, string PipeName, bool ShadowMode)
+internal sealed record HostArguments(string DataDirectory, string PipeName, bool ShadowMode, bool ExperimentalNicknameAuthority)
 {
     private const string DefaultPipeName = "agent-state-daemon-v1";
     private const string TestPipePrefix = "agent-state-daemon-test-";
     internal const string ShadowPipeName = "codex-switchboard-agent-state-shadow-v1";
+    internal const string NicknameAuthorityPipeName = "codex-switchboard-agent-state-nickname-authority-v1";
 
     public static HostArguments Parse(string[] args)
     {
         string? dataDirectory = null;
         var pipeName = DefaultPipeName;
         var shadowMode = false;
+        var experimentalNicknameAuthority = false;
         for (var index = 0; index < args.Length; index++)
         {
             if (args[index] == "--shadow-mode")
@@ -18,6 +20,14 @@ internal sealed record HostArguments(string DataDirectory, string PipeName, bool
                 if (shadowMode)
                     throw new ArgumentException("Invalid host arguments.", nameof(args));
                 shadowMode = true;
+                continue;
+            }
+
+            if (args[index] == "--experimental-nickname-authority")
+            {
+                if (experimentalNicknameAuthority)
+                    throw new ArgumentException("Invalid host arguments.", nameof(args));
+                experimentalNicknameAuthority = true;
                 continue;
             }
 
@@ -60,17 +70,22 @@ internal sealed record HostArguments(string DataDirectory, string PipeName, bool
 
         if (string.IsNullOrWhiteSpace(dataDirectory) || !Path.IsPathFullyQualified(dataDirectory) || IsNetworkPath(dataDirectory) ||
             (shadowMode && (!IsSafeShadowPipeName(pipeName) || args.All(argument => argument != "--data-dir"))) ||
-            (!shadowMode && pipeName == ShadowPipeName))
+            (experimentalNicknameAuthority &&
+                ((shadowMode && !IsTestPipeName(pipeName)) || args.All(argument => argument != "--data-dir") || args.All(argument => argument != "--pipe-name") ||
+                 !(pipeName == NicknameAuthorityPipeName || IsTestPipeName(pipeName)))) ||
+            (!shadowMode && pipeName == ShadowPipeName) ||
+            (!experimentalNicknameAuthority && pipeName == NicknameAuthorityPipeName))
         {
             throw new ArgumentException("Invalid host arguments.", nameof(args));
         }
 
-        return new HostArguments(dataDirectory, pipeName, shadowMode);
+        return new HostArguments(dataDirectory, pipeName, shadowMode, experimentalNicknameAuthority);
     }
 
     private static bool IsSafePipeName(string value)
     {
-        if (string.Equals(value, ShadowPipeName, StringComparison.Ordinal))
+        if (string.Equals(value, ShadowPipeName, StringComparison.Ordinal) ||
+            string.Equals(value, NicknameAuthorityPipeName, StringComparison.Ordinal))
             return true;
 
         return IsTestPipeName(value);
